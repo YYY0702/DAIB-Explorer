@@ -10,7 +10,7 @@ through standard ROS messages.
 
 - FAST-LIVO2 stays on its real-time LIO/VIO path even if frontier extraction is
   slow or the explorer crashes.
-- The cloud subscriber queue is `1`; a 5 Hz timer consumes only the latest
+- The cloud subscriber queue is `1`; a 10 Hz timer consumes only the latest
   cloud, so exploration never accumulates stale frames.
 - EGO-Swarm can later consume `/daib_explorer/goal` and
   `/daib_explorer/planning_cloud` without depending on FAST-LIVO2 headers.
@@ -23,8 +23,8 @@ Inputs:
 
 | Topic | Type | Meaning |
 |---|---|---|
-| `/aft_mapped_to_init` | `nav_msgs/Odometry` | Current world-frame pose |
-| `/cloud_registered` | `sensor_msgs/PointCloud2` | Registered world-frame cloud |
+| `/daib_slam/odom` | `nav_msgs/Odometry` | LIO pose with sensor timestamp |
+| `/daib_slam/planning_cloud` | `sensor_msgs/PointCloud2` | Bounded world-frame LIO cloud with the same timestamp |
 | `/daib_slam/degenerate` | `std_msgs/Bool` | Lidar geometric degeneracy |
 | `/daib_slam/degeneracy_score` | `std_msgs/Float64` | Normalized minimum eigenvalue |
 | `/daib_slam/lio_runtime_ms` | `std_msgs/Float64` | Current LIO latency |
@@ -40,9 +40,10 @@ Outputs:
 | `/daib_explorer/state` | `std_msgs/String` | Validation/debug |
 | `/daib_explorer/generation` | `std_msgs/UInt64` | Suppress duplicate replans |
 
-`Odometry.header.frame_id` and `PointCloud2.header.frame_id` must match. The
-current FAST-LIVO2 configuration publishes both in `camera_init`; a mismatch is
-rejected instead of silently planning in mixed coordinate frames.
+The odometry and cloud are generated from the same LIO update and must have
+matching timestamps and `header.frame_id`. The current FAST-LIVO2 configuration
+publishes both in `camera_init`; a mismatch is rejected instead of silently
+planning in mixed coordinate frames.
 
 ## Build and run
 
@@ -60,6 +61,8 @@ roslaunch daib_explorer explorer.launch
 For bag playback, pass `use_sim_time:=true` and start the bag with `--clock`.
 Start FAST-LIVO2 first or at the same time; the explorer publishes
 `/daib_explorer/ready=false` until fresh odometry and cloud data arrive.
+Use [`docs/RUNTIME_VALIDATION.md`](docs/RUNTIME_VALIDATION.md) for the complete
+pre-EGO acceptance test.
 
 ## Safety boundary
 

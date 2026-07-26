@@ -18,6 +18,14 @@ struct Vec3
   double z = 0.0;
 };
 
+struct Quaternion
+{
+  double x = 0.0;
+  double y = 0.0;
+  double z = 0.0;
+  double w = 1.0;
+};
+
 struct VoxelKey
 {
   int64_t x = 0;
@@ -47,6 +55,7 @@ struct ExplorerConfig
   int frontier_evaluation_budget = 1200;
 
   double coverage_voxel_size_m = 2.0;
+  int max_coverage_points_per_update = 256;
   double submap_translation_threshold_m = 20.0;
   double submap_rotation_threshold_deg = 45.0;
 
@@ -93,7 +102,7 @@ struct SubmapSummary
   uint64_t start_update = 0;
   uint64_t end_update = 0;
   Vec3 anchor;
-  double anchor_yaw = 0.0;
+  Quaternion anchor_orientation;
   Vec3 min_bound;
   Vec3 max_bound;
   std::size_t covered_cells = 0;
@@ -105,9 +114,12 @@ struct ExplorerStats
   std::size_t occupied_cells = 0;
   std::size_t frontier_cells = 0;
   std::size_t visited_cells = 0;
+  std::size_t observed_cells = 0;
   std::size_t submap_count = 0;
   double smoothed_lio_time_ms = 0.0;
   double budget_scale = 1.0;
+  double last_plan_ms = 0.0;
+  double last_update_ms = 0.0;
   int effective_raycasts = 0;
   int effective_frontier_updates = 0;
   int effective_frontier_evaluations = 0;
@@ -120,8 +132,8 @@ public:
   explicit ExplorerCore(ExplorerConfig config);
 
   void setHealth(bool degenerate, double degeneracy_score, double lio_runtime_ms);
-  void update(const Vec3 &position, double yaw, const std::vector<Vec3> &points,
-              double timestamp);
+  void update(const Vec3 &position, const Quaternion &orientation,
+              const std::vector<Vec3> &points, double timestamp);
   bool consumeDecision(GoalDecision &decision);
   std::vector<Vec3> frontierPoints(std::size_t limit) const;
   std::vector<Vec3> occupiedPoints(std::size_t limit) const;
@@ -143,6 +155,7 @@ private:
   std::unordered_set<VoxelKey, VoxelKeyHash> dirty_frontiers_;
   std::unordered_set<VoxelKey, VoxelKeyHash> frontiers_;
   std::unordered_map<VoxelKey, uint32_t, VoxelKeyHash> visits_;
+  std::unordered_map<VoxelKey, uint32_t, VoxelKeyHash> observations_;
   std::unordered_set<VoxelKey, VoxelKeyHash> active_submap_cells_;
   std::vector<SubmapSummary> submaps_;
 
@@ -167,7 +180,8 @@ private:
   bool segmentBlocked(const Vec3 &start, const Vec3 &end,
                       double *known_free_ratio = nullptr) const;
   double frontierScore(const VoxelKey &key, const Vec3 &position) const;
-  void updateSubmap(const Vec3 &position, double yaw);
+  void updateSubmap(const Vec3 &position, const Quaternion &orientation,
+                    const std::vector<Vec3> &points);
   void updateDecision(const Vec3 &position, double timestamp);
   void sanitizeConfig();
 };

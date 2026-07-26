@@ -61,6 +61,8 @@ void ExplorerCore::sanitizeConfig()
   config_.frontier_evaluation_budget =
       std::max(1, config_.frontier_evaluation_budget);
   config_.coverage_voxel_size_m = std::max(0.1, config_.coverage_voxel_size_m);
+  config_.max_coverage_points_per_update =
+      std::max(1, config_.max_coverage_points_per_update);
   config_.submap_translation_threshold_m =
       std::max(1.0, config_.submap_translation_threshold_m);
   config_.submap_rotation_threshold_deg =
@@ -352,23 +354,40 @@ double ExplorerCore::frontierScore(const VoxelKey &voxel,
          0.25 * distance(point, position);
 }
 
-void ExplorerCore::updateSubmap(const Vec3 &position, double yaw)
+void ExplorerCore::updateSubmap(const Vec3 &position,
+                                const Quaternion &orientation,
+                                const std::vector<Vec3> &points)
 {
   const VoxelKey coverage_key = key(position, config_.coverage_voxel_size_m);
   ++visits_[coverage_key];
   stats_.visited_cells = visits_.size();
 
+  const double quaternion_norm =
+      std::sqrt(orientation.x * orientation.x +
+                orientation.y * orientation.y +
+                orientation.z * orientation.z +
+                orientation.w * orientation.w);
+  const Quaternion normalized =
+      quaternion_norm > 1e-12
+          ? Quaternion{orientation.x / quaternion_norm,
+                       orientation.y / quaternion_norm,
+                       orientation.z / quaternion_norm,
+                       orientation.w / quaternion_norm}
+          : Quaternion{};
   bool create = submaps_.empty();
   if (!create)
   {
     const SubmapSummary &active = submaps_.back();
-    const double yaw_delta =
-        std::fabs(std::remainder(yaw - active.anchor_yaw, 2.0 * kPi)) *
-        180.0 / kPi;
+    const Quaternion &anchor = active.anchor_orientation;
+    const double dot = std::fabs(
+        normalized.x * anchor.x + normalized.y * anchor.y +
+        normalized.z * anchor.z + normalized.w * anchor.w);
+    const double rotation_delta =
+        2.0 * std::acos(clamp(dot, 0.0, 1.0)) * 180.0 / kPi;
     create =
         distance(position, active.anchor) >=
             config_.submap_translation_threshold_m ||
-        yaw_delta >= config_.submap_rotation_threshold_deg;
+        rotation_delta >= config_.submap_rotation_threshold_deg;
   }
   if (create)
   {
@@ -378,7 +397,7 @@ void ExplorerCore::updateSubmap(const Vec3 &position, double yaw)
     summary.start_update = update_id_;
     summary.end_update = update_id_;
     summary.anchor = position;
-    summary.anchor_yaw = yaw;
+    summary.anchor_orientation = normalized;
     summary.min_bound = position;
     summary.max_bound = position;
     submaps_.push_back(summary);
@@ -393,7 +412,27 @@ void ExplorerCore::updateSubmap(const Vec3 &position, double yaw)
   active.max_bound.x = std::max(active.max_bound.x, position.x);
   active.max_bound.y = std::max(active.max_bound.y, position.y);
   active.max_bound.z = std::max(active.max_bound.z, position.z);
-  if (active_submap_cells_.insert(coverage_key).second)
+  bool coverage_changed = active_submap_cells_.insert(coverage_key).second;
+  if (!points.empty())
+  {
+    const std::size_t sample_budget =
+        static_cast<std::size_t>(config_.max_coverage_points_per_update);
+    const std::size_t stride = std::max<std::size_t>(
+        1, (points.size() + sample_budget - 1) / sample_budget);
+    std::size_t sampled = 0;
+    for (std::size_t index = 0;
+         index < points.size() && sampled < sample_budget;
+         index += stride, ++sampled)
+    {
+      const VoxelKey observed_key =
+          key(points[index], config_.coverage_voxel_size_m);
+      ++observations_[observed_key];
+      coverage_changed =
+          active_submap_cells_.insert(observed_key).second || coverage_changed;
+    }
+  }
+  stats_.observed_cells = observations_.size();
+  if (coverage_changed)
   {
     active.covered_cells = active_submap_cells_.size();
     ++active.version;
@@ -467,6 +506,7 @@ void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
   }
   const auto elapsed = std::chrono::duration<double, std::milli>(
       std::chrono::steady_clock::now() - start);
+  stats_.last_plan_ms = elapsed.count();
   last_plan_time_ = timestamp;
 
   if (!found)
@@ -538,15 +578,21 @@ void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
   ++decision_.generation;
 }
 
-void ExplorerCore::update(const Vec3 &position, double yaw,
+void ExplorerCore::update(const Vec3 &position,
+                          const Quaternion &orientation,
                           const std::vector<Vec3> &points, double timestamp)
 {
+  const auto start = std::chrono::steady_clock::now();
   ++update_id_;
-  updateSubmap(position, yaw);
+  updateSubmap(position, orientation, points);
   integrateCloud(position, points);
   prune(position);
   updateFrontiers();
   updateDecision(position, timestamp);
+  stats_.last_update_ms =
+      std::chrono::duration<double, std::milli>(
+          std::chrono::steady_clock::now() - start)
+          .count();
 }
 
 bool ExplorerCore::consumeDecision(GoalDecision &decision)

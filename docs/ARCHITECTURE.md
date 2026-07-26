@@ -10,9 +10,10 @@ FAST-LIVO2YYY (10 Hz target, localization critical)
   - bounded local/long-term visual feature memory
         |
         | standard ROS1 messages, no shared source library
-        | odom + registered cloud + degeneracy + LIO runtime
+        | synchronized odom + bounded planning cloud
+        | + degeneracy + LIO runtime
         v
-DAIB-Explorer (default 5 Hz, best effort)
+DAIB-Explorer (default 10 Hz, best effort)
   - rolling occupancy map
   - incremental frontier set
   - coverage memory and submap summaries
@@ -32,9 +33,9 @@ PX4
    `map_update_rate_hz`, and used for collision/frontier queries.
 2. **Active frontier set**: updated only around cells whose occupancy state
    changed. Per-update work is capped by `frontier_update_budget`.
-3. **Long-term exploration memory**: coarse visited cells plus versioned submap
-   summaries. It prevents repeated coverage without copying FAST-LIVO2's visual
-   feature map.
+3. **Long-term exploration memory**: coarse visited and LiDAR-observed cells
+   plus versioned submap summaries with full 3D anchor orientation. It prevents
+   repeated coverage without copying FAST-LIVO2's visual feature map.
 
 The first two layers can be discarded/rebuilt if the explorer restarts; SLAM
 localization is unaffected. Persisting and exchanging the third layer is the

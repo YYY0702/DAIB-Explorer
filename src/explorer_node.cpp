@@ -93,8 +93,8 @@ private:
   double degeneracy_score_ = 0.0;
   double lio_runtime_ms_ = -1.0;
 
-  std::string odom_topic_ = "/aft_mapped_to_init";
-  std::string cloud_topic_ = "/cloud_registered";
+  std::string odom_topic_ = "/daib_slam/odom";
+  std::string cloud_topic_ = "/daib_slam/planning_cloud";
   std::string degenerate_topic_ = "/daib_slam/degenerate";
   std::string score_topic_ = "/daib_slam/degeneracy_score";
   std::string runtime_topic_ = "/daib_slam/lio_runtime_ms";
@@ -104,7 +104,7 @@ private:
   std::string ready_topic_ = "/daib_explorer/ready";
   std::string state_topic_ = "/daib_explorer/state";
   std::string generation_topic_ = "/daib_explorer/generation";
-  double map_update_rate_hz_ = 5.0;
+  double map_update_rate_hz_ = 10.0;
   double input_timeout_s_ = 1.0;
   double max_input_stamp_skew_s_ = 0.2;
   int max_cloud_points_to_convert_ = 6000;
@@ -130,7 +130,7 @@ private:
     private_nh_.param(
         "topics/generation", generation_topic_, generation_topic_);
 
-    private_nh_.param("map_update_rate_hz", map_update_rate_hz_, 5.0);
+    private_nh_.param("map_update_rate_hz", map_update_rate_hz_, 10.0);
     private_nh_.param("input_timeout_s", input_timeout_s_, 1.0);
     private_nh_.param(
         "max_input_stamp_skew_s", max_input_stamp_skew_s_, 0.2);
@@ -175,6 +175,9 @@ private:
     private_nh_.param("coverage_voxel_size_m",
                       config.coverage_voxel_size_m,
                       config.coverage_voxel_size_m);
+    private_nh_.param("max_coverage_points_per_update",
+                      config.max_coverage_points_per_update,
+                      config.max_coverage_points_per_update);
     private_nh_.param("submap_translation_threshold_m",
                       config.submap_translation_threshold_m,
                       config.submap_translation_threshold_m);
@@ -407,12 +410,15 @@ private:
     const Vec3 position{odom->pose.pose.position.x,
                         odom->pose.pose.position.y,
                         odom->pose.pose.position.z};
-    const double yaw = tf::getYaw(odom->pose.pose.orientation);
+    const Quaternion orientation{odom->pose.pose.orientation.x,
+                                 odom->pose.pose.orientation.y,
+                                 odom->pose.pose.orientation.z,
+                                 odom->pose.pose.orientation.w};
     const double timestamp =
         cloud->header.stamp.isZero() ? ros::Time::now().toSec()
                                     : cloud->header.stamp.toSec();
     core_->setHealth(degenerate, score, runtime);
-    core_->update(position, yaw, points, timestamp);
+    core_->update(position, orientation, points, timestamp);
     processed_cloud_sequence_ = cloud_sequence;
     publishReady(true);
 
@@ -458,8 +464,11 @@ private:
         1.0, "[ DAIB Explorer ] map=" << stats.free_cells << " free/"
         << stats.occupied_cells << " occupied/" << stats.frontier_cells
         << " frontier, visited=" << stats.visited_cells
+        << ", observed=" << stats.observed_cells
         << ", submaps=" << stats.submap_count
         << ", lio_ema=" << stats.smoothed_lio_time_ms << " ms"
+        << ", update=" << stats.last_update_ms << " ms"
+        << ", plan=" << stats.last_plan_ms << " ms"
         << ", budget_scale=" << stats.budget_scale
         << ", budgets=" << stats.effective_raycasts << " rays/"
         << stats.effective_frontier_updates << " frontier/"
