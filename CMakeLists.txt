@@ -33,10 +33,12 @@ add_executable(daib_explorer_node src/explorer_node.cpp)
 target_link_libraries(daib_explorer_node daib_explorer_core ${catkin_LIBRARIES} ${PCL_LIBRARIES})
 
 if(CATKIN_ENABLE_TESTING)
+  find_package(rostest REQUIRED)
   catkin_add_gtest(explorer_core_test test/explorer_core_test.cpp)
   if(TARGET explorer_core_test)
     target_link_libraries(explorer_core_test daib_explorer_core)
   endif()
+  add_rostest(test/runtime_contract.test)
 endif()
 
 install(TARGETS daib_explorer_core daib_explorer_node

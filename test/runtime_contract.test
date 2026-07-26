@@ -1,0 +1,17 @@
+<launch>
+  <node pkg="daib_explorer"
+        type="daib_explorer_node"
+        name="daib_explorer_contract_test_node"
+        output="screen">
+    <rosparam command="load" file="$(find daib_explorer)/config/explorer.yaml"/>
+    <param name="map_update_rate_hz" value="20.0"/>
+    <param name="input_timeout_s" value="0.5"/>
+    <param name="min_goal_distance_m" value="1.0"/>
+    <param name="max_goal_distance_m" value="10.0"/>
+  </node>
+
+  <test test-name="runtime_contract"
+        pkg="daib_explorer"
+        type="runtime_contract_test.py"
+        time-limit="15.0"/>
+</launch>
