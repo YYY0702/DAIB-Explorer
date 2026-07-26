@@ -1,0 +1,29 @@
+name: ROS1 Noetic CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-22.04
+    container: ros:noetic-ros-base-focal
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install package dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            libpcl-dev \
+            ros-noetic-pcl-ros \
+            ros-noetic-tf
+      - name: Build and test
+        shell: bash
+        run: |
+          source /opt/ros/noetic/setup.bash
+          mkdir -p /tmp/daib_ws/src
+          ln -s "$GITHUB_WORKSPACE" /tmp/daib_ws/src/daib_explorer
+          cd /tmp/daib_ws
+          catkin_make -DCMAKE_BUILD_TYPE=Release
+          catkin_make run_tests
+          catkin_test_results

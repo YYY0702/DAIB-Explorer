@@ -1,0 +1,13 @@
+<launch>
+  <arg name="config" default="$(find daib_explorer)/config/explorer.yaml"/>
+  <arg name="use_sim_time" default="false"/>
+
+  <param name="/use_sim_time" value="$(arg use_sim_time)"/>
+  <node pkg="daib_explorer"
+        type="daib_explorer_node"
+        name="daib_explorer"
+        output="screen"
+        respawn="false">
+    <rosparam command="load" file="$(arg config)"/>
+  </node>
+</launch>

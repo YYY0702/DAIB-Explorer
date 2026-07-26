@@ -1,0 +1,69 @@
+# The node is deliberately independent of FAST-LIVO2 source code. Only these
+# standard ROS1 topics form the runtime contract.
+topics:
+  odom: /aft_mapped_to_init
+  cloud: /cloud_registered
+  degenerate: /daib_slam/degenerate
+  degeneracy_score: /daib_slam/degeneracy_score
+  lio_runtime_ms: /daib_slam/lio_runtime_ms
+  goal: /daib_explorer/goal
+  frontiers: /daib_explorer/frontiers
+  planning_cloud: /daib_explorer/planning_cloud
+  ready: /daib_explorer/ready
+  state: /daib_explorer/state
+  generation: /daib_explorer/generation
+
+robot_id: 0
+
+# The latest cloud replaces any pending cloud. Mapping runs at this independent
+# low rate, so a slow explorer cannot build a backlog inside FAST-LIVO2.
+map_update_rate_hz: 5.0
+input_timeout_s: 1.0
+max_input_stamp_skew_s: 0.2
+max_cloud_points_to_convert: 6000
+max_published_frontiers: 2000
+max_published_planning_points: 20000
+
+# High-frequency rolling occupancy map used by frontier selection and later by
+# an EGO-Swarm adapter. It is intentionally independent of the SLAM map.
+planning_voxel_size_m: 0.5
+planning_sensor_range_m: 20.0
+planning_map_radius_m: 40.0
+planning_prune_budget: 256
+max_raycasts_per_update: 64
+max_ray_steps: 64
+frontier_update_budget: 512
+frontier_evaluation_budget: 1200
+
+# Low-frequency exploration memory. Summaries are internal in the single-UAV
+# phase and reserve stable robot/submap IDs for future multi-UAV exchange.
+coverage_voxel_size_m: 2.0
+submap_translation_threshold_m: 20.0
+submap_rotation_threshold_deg: 45.0
+
+replan_interval_s: 1.0
+goal_min_hold_time_s: 3.0
+# Count map updates, not raw LiDAR frames (3 updates at 5 Hz is about 0.6 s).
+goal_blocked_confirm_updates: 3
+same_goal_tolerance_m: 0.5
+goal_timeout_s: 12.0
+goal_reached_distance_m: 1.0
+min_goal_distance_m: 2.0
+max_goal_distance_m: 15.0
+max_goal_vertical_distance_m: 3.0
+goal_switch_margin: 0.15
+
+# Joint compute budget: reduce exploration work while LIO is busy. This never
+# changes FAST-LIVO2 itself; it only consumes its runtime telemetry.
+dynamic_budget_enabled: true
+lio_busy_threshold_ms: 90.0
+lio_overload_threshold_ms: 110.0
+lio_time_ema_alpha: 0.20
+busy_budget_scale: 0.50
+overload_budget_scale: 0.25
+
+# In geometric degeneracy, use shorter goals, stronger switching hysteresis,
+# and prefer rays already known to be free.
+degenerate_max_goal_distance_m: 8.0
+degenerate_goal_switch_margin: 0.30
+degenerate_safe_path_weight: 4.0
