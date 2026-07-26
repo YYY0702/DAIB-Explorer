@@ -27,6 +27,12 @@ EGO-Swarm adapter / trajectory planner (future repository/module)
 PX4
 ```
 
+Within DAIB-Explorer, only occupancy integration and current-goal blockage
+checks follow the 10 Hz input. Dirty-frontier processing runs at 2 Hz, goal
+candidate evaluation at 1 Hz, and long-term coverage/submap maintenance at
+1 Hz. These stages share one serialized core rather than independent worker
+threads, so rate separation does not introduce map races.
+
 ## Three map layers
 
 1. **Rolling occupancy map**: bounded by `planning_map_radius_m`, updated at
@@ -43,10 +49,11 @@ future dual-UAV extension.
 
 ## Compute isolation
 
-The node uses a queue of one for registered clouds and performs heavy work only
-from a timer. LIO runtime is smoothed locally and changes only the explorer's
-ray, frontier-update and candidate-evaluation budgets. No callback into
-FAST-LIVO2 exists.
+The node uses a queue of one for planning clouds and performs work only from a
+timer. LIO runtime is smoothed locally and changes only the explorer's ray,
+frontier-update and candidate-evaluation budgets. No callback into FAST-LIVO2
+exists. If one 10 Hz update overlaps the next timer tick, the new tick is
+discarded rather than queued.
 
 ## Multi-UAV extension point
 

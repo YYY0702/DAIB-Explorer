@@ -17,6 +17,18 @@ through standard ROS messages.
 - A future multi-UAV transport can exchange submap summaries without changing
   the SLAM process.
 
+The internal schedule is deliberately multi-rate:
+
+| Stage | Default rate |
+|---|---:|
+| Occupancy integration and current-goal blocking check | 10 Hz |
+| Incremental dirty-frontier processing/publication | 2 Hz |
+| Goal candidate evaluation/replanning | 1 Hz |
+| Coverage memory and submap maintenance | 1 Hz |
+
+Dirty cells accumulate in a deduplicated set between frontier cycles, so the
+lower frontier rate does not discard occupancy changes.
+
 ## ROS contract
 
 Inputs:

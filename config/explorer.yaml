@@ -35,6 +35,11 @@ max_raycasts_per_update: 64
 max_ray_steps: 64
 frontier_update_budget: 512
 frontier_evaluation_budget: 1200
+# Multi-rate scheduling: safety-relevant occupancy and blocked-goal checks run
+# on every accepted map update; the following heavier tasks run independently.
+frontier_update_rate_hz: 2.0
+goal_evaluation_rate_hz: 1.0
+long_term_update_rate_hz: 1.0
 
 # Low-frequency exploration memory. Summaries are internal in the single-UAV
 # phase and reserve stable robot/submap IDs for future multi-UAV exchange.

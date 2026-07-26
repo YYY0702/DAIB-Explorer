@@ -120,6 +120,28 @@ TEST(ExplorerCore, RequiresConsecutiveObstacleConfirmation)
   EXPECT_TRUE(explorer.consumeDecision(decision));
 }
 
+TEST(ExplorerCore, RunsIndependentMultiRateSchedule)
+{
+  ExplorerConfig config;
+  config.frontier_update_rate_hz = 2.0;
+  config.goal_evaluation_rate_hz = 1.0;
+  config.long_term_update_rate_hz = 1.0;
+  ExplorerCore explorer(config);
+  const std::vector<Vec3> points{{8.0, 0.0, 0.0}};
+
+  for (int update = 0; update < 10; ++update)
+  {
+    explorer.update({0.0, 0.0, 0.0}, {}, points,
+                    1.0 + 0.1 * update);
+  }
+
+  EXPECT_EQ(explorer.stats().map_updates, 10U);
+  EXPECT_EQ(explorer.stats().goal_status_checks, 10U);
+  EXPECT_EQ(explorer.stats().frontier_update_cycles, 2U);
+  EXPECT_EQ(explorer.stats().goal_evaluation_cycles, 1U);
+  EXPECT_EQ(explorer.stats().long_term_update_cycles, 1U);
+}
+
 }  // namespace daib_explorer
 
 int main(int argc, char **argv)

@@ -172,6 +172,15 @@ private:
     private_nh_.param("frontier_evaluation_budget",
                       config.frontier_evaluation_budget,
                       config.frontier_evaluation_budget);
+    private_nh_.param("frontier_update_rate_hz",
+                      config.frontier_update_rate_hz,
+                      config.frontier_update_rate_hz);
+    private_nh_.param("goal_evaluation_rate_hz",
+                      config.goal_evaluation_rate_hz,
+                      config.goal_evaluation_rate_hz);
+    private_nh_.param("long_term_update_rate_hz",
+                      config.long_term_update_rate_hz,
+                      config.long_term_update_rate_hz);
     private_nh_.param("coverage_voxel_size_m",
                       config.coverage_voxel_size_m,
                       config.coverage_voxel_size_m);
@@ -417,15 +426,20 @@ private:
     const double timestamp =
         cloud->header.stamp.isZero() ? ros::Time::now().toSec()
                                     : cloud->header.stamp.toSec();
+    const uint64_t previous_frontier_cycle =
+        core_->stats().frontier_update_cycles;
     core_->setHealth(degenerate, score, runtime);
     core_->update(position, orientation, points, timestamp);
     processed_cloud_sequence_ = cloud_sequence;
     publishReady(true);
 
-    publishPointCloud(
-        core_->frontierPoints(
-            static_cast<std::size_t>(max_published_frontiers_)),
-        cloud->header, frontiers_pub_);
+    if (core_->stats().frontier_update_cycles != previous_frontier_cycle)
+    {
+      publishPointCloud(
+          core_->frontierPoints(
+              static_cast<std::size_t>(max_published_frontiers_)),
+          cloud->header, frontiers_pub_);
+    }
     if (planning_cloud_pub_.getNumSubscribers() > 0)
       publishPointCloud(
           core_->occupiedPoints(
@@ -470,6 +484,11 @@ private:
         << ", update=" << stats.last_update_ms << " ms"
         << ", plan=" << stats.last_plan_ms << " ms"
         << ", budget_scale=" << stats.budget_scale
+        << ", cycles=" << stats.map_updates << " map/"
+        << stats.goal_status_checks << " blocked-check/"
+        << stats.frontier_update_cycles << " frontier/"
+        << stats.goal_evaluation_cycles << " goal/"
+        << stats.long_term_update_cycles << " memory"
         << ", budgets=" << stats.effective_raycasts << " rays/"
         << stats.effective_frontier_updates << " frontier/"
         << stats.effective_frontier_evaluations << " candidates");

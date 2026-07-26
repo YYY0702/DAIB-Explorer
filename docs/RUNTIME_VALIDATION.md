@@ -36,6 +36,8 @@ rostopic echo /daib_explorer/goal
 Acceptance criteria:
 
 - free, occupied, frontier, visited and observed counters grow in the log;
+- the `cycles` log ratio approaches `10 map : 10 blocked-check : 2 frontier :
+  1 goal : 1 memory` per second;
 - a valid goal has frame `camera_init` and lies near a frontier;
 - generation does not change during `goal_min_hold_time_s`;
 - one transient occupied update does not switch the goal;

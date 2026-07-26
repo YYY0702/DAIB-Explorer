@@ -53,6 +53,9 @@ struct ExplorerConfig
   int max_ray_steps = 64;
   int frontier_update_budget = 512;
   int frontier_evaluation_budget = 1200;
+  double frontier_update_rate_hz = 2.0;
+  double goal_evaluation_rate_hz = 1.0;
+  double long_term_update_rate_hz = 1.0;
 
   double coverage_voxel_size_m = 2.0;
   int max_coverage_points_per_update = 256;
@@ -124,6 +127,11 @@ struct ExplorerStats
   int effective_frontier_updates = 0;
   int effective_frontier_evaluations = 0;
   uint64_t suppressed_goal_republishes = 0;
+  uint64_t map_updates = 0;
+  uint64_t goal_status_checks = 0;
+  uint64_t frontier_update_cycles = 0;
+  uint64_t goal_evaluation_cycles = 0;
+  uint64_t long_term_update_cycles = 0;
 };
 
 class ExplorerCore
@@ -167,6 +175,12 @@ private:
   bool degenerate_ = true;
   double degeneracy_score_ = 0.0;
   double smoothed_lio_ms_ = -1.0;
+  double last_frontier_update_time_ = -1.0;
+  double last_goal_evaluation_time_ = -1.0;
+  double last_long_term_update_time_ = -1.0;
+  bool goal_reached_ = false;
+  bool goal_blocked_ = false;
+  bool goal_timeout_ = false;
 
   static double distance(const Vec3 &a, const Vec3 &b);
   VoxelKey key(const Vec3 &point, double voxel_size) const;
@@ -182,7 +196,9 @@ private:
   double frontierScore(const VoxelKey &key, const Vec3 &position) const;
   void updateSubmap(const Vec3 &position, const Quaternion &orientation,
                     const std::vector<Vec3> &points);
+  void updateGoalStatus(const Vec3 &position, double timestamp);
   void updateDecision(const Vec3 &position, double timestamp);
+  bool isDue(double timestamp, double rate_hz, double &last_time);
   void sanitizeConfig();
 };
 

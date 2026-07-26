@@ -60,6 +60,12 @@ void ExplorerCore::sanitizeConfig()
   config_.frontier_update_budget = std::max(1, config_.frontier_update_budget);
   config_.frontier_evaluation_budget =
       std::max(1, config_.frontier_evaluation_budget);
+  config_.frontier_update_rate_hz =
+      std::max(0.1, config_.frontier_update_rate_hz);
+  config_.goal_evaluation_rate_hz =
+      std::max(0.1, config_.goal_evaluation_rate_hz);
+  config_.long_term_update_rate_hz =
+      std::max(0.1, config_.long_term_update_rate_hz);
   config_.coverage_voxel_size_m = std::max(0.1, config_.coverage_voxel_size_m);
   config_.max_coverage_points_per_update =
       std::max(1, config_.max_coverage_points_per_update);
@@ -443,31 +449,16 @@ void ExplorerCore::updateSubmap(const Vec3 &position,
 void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
 {
   const bool had_goal = decision_.valid;
-  const bool reached =
-      had_goal &&
-      distance(decision_.position, position) <= config_.goal_reached_distance_m;
-  const bool raw_blocked =
-      had_goal && segmentBlocked(position, decision_.position);
-  if (!had_goal || reached) blocked_streak_ = 0;
-  else if (raw_blocked)
-    blocked_streak_ =
-        std::min(config_.goal_blocked_confirm_updates, blocked_streak_ + 1);
-  else
-    blocked_streak_ = 0;
-  const bool blocked =
-      raw_blocked &&
-      blocked_streak_ >= config_.goal_blocked_confirm_updates;
-  const bool timeout =
-      had_goal && goal_set_time_ >= 0.0 &&
-      timestamp - goal_set_time_ >= config_.goal_timeout_s;
   const bool hold =
       had_goal && goal_set_time_ >= 0.0 &&
       timestamp - goal_set_time_ < config_.goal_min_hold_time_s;
-  if (hold && !reached && !blocked) return;
+  if (hold && !goal_reached_ && !goal_blocked_) return;
   const bool periodic =
       last_plan_time_ < 0.0 ||
       timestamp - last_plan_time_ >= config_.replan_interval_s;
-  if (had_goal && !reached && !blocked && !timeout && !periodic) return;
+  if (had_goal && !goal_reached_ && !goal_blocked_ && !goal_timeout_ &&
+      !periodic)
+    return;
 
   const auto start = std::chrono::steady_clock::now();
   const int budget = std::max(
@@ -511,7 +502,7 @@ void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
 
   if (!found)
   {
-    if (had_goal && !reached && !blocked && !timeout)
+    if (had_goal && !goal_reached_ && !goal_blocked_ && !goal_timeout_)
     {
       decision_.planning_time_ms = elapsed.count();
       return;
@@ -521,15 +512,16 @@ void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
     decision_.updated = changed;
     decision_.state = "WAIT_FOR_FRONTIER";
     decision_.reason =
-        reached ? "goal_reached_no_next_frontier"
-                : blocked ? "goal_blocked_no_safe_frontier"
-                          : "no_safe_frontier";
+        goal_reached_
+            ? "goal_reached_no_next_frontier"
+            : goal_blocked_ ? "goal_blocked_no_safe_frontier"
+                            : "no_safe_frontier";
     decision_.planning_time_ms = elapsed.count();
     blocked_streak_ = 0;
     return;
   }
 
-  if (had_goal && timeout && !reached && !blocked &&
+  if (had_goal && goal_timeout_ && !goal_reached_ && !goal_blocked_ &&
       distance(best, decision_.position) <= config_.same_goal_tolerance_m)
   {
     goal_set_time_ = timestamp;
@@ -540,7 +532,7 @@ void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
     return;
   }
 
-  if (had_goal && !reached && !blocked && !timeout)
+  if (had_goal && !goal_reached_ && !goal_blocked_ && !goal_timeout_)
   {
     double current_known_free = 0.0;
     segmentBlocked(position, decision_.position, &current_known_free);
@@ -569,13 +561,50 @@ void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
   decision_.planning_time_ms = elapsed.count();
   decision_.state = degenerate_ ? "DEGRADED_EXPLORE" : "EXPLORE";
   if (!had_goal) decision_.reason = "initial_frontier";
-  else if (reached) decision_.reason = "goal_reached";
-  else if (blocked) decision_.reason = "new_obstacle";
-  else if (timeout) decision_.reason = "goal_timeout";
+  else if (goal_reached_) decision_.reason = "goal_reached";
+  else if (goal_blocked_) decision_.reason = "new_obstacle";
+  else if (goal_timeout_) decision_.reason = "goal_timeout";
   else decision_.reason = "better_frontier";
   goal_set_time_ = timestamp;
   blocked_streak_ = 0;
   ++decision_.generation;
+}
+
+void ExplorerCore::updateGoalStatus(const Vec3 &position, double timestamp)
+{
+  ++stats_.goal_status_checks;
+  const bool had_goal = decision_.valid;
+  goal_reached_ =
+      had_goal &&
+      distance(decision_.position, position) <=
+          config_.goal_reached_distance_m;
+  const bool raw_blocked =
+      had_goal && segmentBlocked(position, decision_.position);
+  if (!had_goal || goal_reached_)
+    blocked_streak_ = 0;
+  else if (raw_blocked)
+    blocked_streak_ =
+        std::min(config_.goal_blocked_confirm_updates, blocked_streak_ + 1);
+  else
+    blocked_streak_ = 0;
+  goal_blocked_ =
+      raw_blocked &&
+      blocked_streak_ >= config_.goal_blocked_confirm_updates;
+  goal_timeout_ =
+      had_goal && goal_set_time_ >= 0.0 &&
+      timestamp - goal_set_time_ >= config_.goal_timeout_s;
+}
+
+bool ExplorerCore::isDue(double timestamp, double rate_hz, double &last_time)
+{
+  const double period = 1.0 / rate_hz;
+  if (last_time < 0.0 || timestamp < last_time ||
+      timestamp - last_time + 1e-9 >= period)
+  {
+    last_time = timestamp;
+    return true;
+  }
+  return false;
 }
 
 void ExplorerCore::update(const Vec3 &position,
@@ -584,11 +613,29 @@ void ExplorerCore::update(const Vec3 &position,
 {
   const auto start = std::chrono::steady_clock::now();
   ++update_id_;
-  updateSubmap(position, orientation, points);
+  ++stats_.map_updates;
   integrateCloud(position, points);
   prune(position);
-  updateFrontiers();
-  updateDecision(position, timestamp);
+  updateGoalStatus(position, timestamp);
+
+  if (isDue(timestamp, config_.frontier_update_rate_hz,
+            last_frontier_update_time_))
+  {
+    updateFrontiers();
+    ++stats_.frontier_update_cycles;
+  }
+  if (isDue(timestamp, config_.long_term_update_rate_hz,
+            last_long_term_update_time_))
+  {
+    updateSubmap(position, orientation, points);
+    ++stats_.long_term_update_cycles;
+  }
+  if (isDue(timestamp, config_.goal_evaluation_rate_hz,
+            last_goal_evaluation_time_))
+  {
+    updateDecision(position, timestamp);
+    ++stats_.goal_evaluation_cycles;
+  }
   stats_.last_update_ms =
       std::chrono::duration<double, std::milli>(
           std::chrono::steady_clock::now() - start)
