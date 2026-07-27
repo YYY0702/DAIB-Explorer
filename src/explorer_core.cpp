@@ -195,7 +195,12 @@ void ExplorerCore::setHealth(bool degenerate, double degeneracy_score,
 void ExplorerCore::integrateCloud(const Vec3 &origin,
                                   const std::vector<Vec3> &points)
 {
-  updateCell(key(origin, config_.planning_voxel_size_m), -1);
+  // The vehicle physically occupies this voxel, so it is direct free-space
+  // evidence rather than one weak ray miss. Clear stale endpoint hits
+  // immediately; otherwise a previously occupied voxel can remain occupied
+  // for several map cycles after the vehicle has entered it and EGO will
+  // reject every trajectory as starting inside an obstacle.
+  updateCell(key(origin, config_.planning_voxel_size_m), -10);
   const int ray_budget = std::max(
       1, static_cast<int>(std::lround(
              config_.max_raycasts_per_update * stats_.budget_scale)));
