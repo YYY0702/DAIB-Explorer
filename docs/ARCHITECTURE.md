@@ -21,7 +21,10 @@ DAIB-Explorer (default 10 Hz, best effort)
         |
         | PoseStamped goal + planning cloud + ready watchdog
         v
-EGO-Swarm adapter / trajectory planner (future repository/module)
+ego-planner-swarmYYY
+  - DAIB goal watchdog and generation deduplication
+  - local occupied-cloud collision map
+  - dynamically feasible B-spline generation/replanning
         |
         v
 PX4

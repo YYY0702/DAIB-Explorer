@@ -662,15 +662,36 @@ std::vector<Vec3> ExplorerCore::frontierPoints(std::size_t limit) const
   return result;
 }
 
-std::vector<Vec3> ExplorerCore::occupiedPoints(std::size_t limit) const
+std::vector<Vec3> ExplorerCore::occupiedPoints(
+    const Vec3 &position, double radius, std::size_t limit) const
 {
   std::vector<Vec3> result;
   result.reserve(std::min(limit, stats_.occupied_cells));
   for (const auto &entry : map_)
   {
-    if (result.size() >= limit) break;
     if (entry.second.log_odds >= 2)
-      result.push_back(center(entry.first, config_.planning_voxel_size_m));
+    {
+      const Vec3 point = center(entry.first, config_.planning_voxel_size_m);
+      if (distance(point, position) <= radius)
+        result.push_back(point);
+    }
+  }
+  if (result.size() > limit)
+  {
+    const auto squared_distance = [&position](const Vec3 &point)
+    {
+      const double dx = point.x - position.x;
+      const double dy = point.y - position.y;
+      const double dz = point.z - position.z;
+      return dx * dx + dy * dy + dz * dz;
+    };
+    std::nth_element(
+        result.begin(), result.begin() + limit, result.end(),
+        [&squared_distance](const Vec3 &left, const Vec3 &right)
+        {
+          return squared_distance(left) < squared_distance(right);
+        });
+    result.resize(limit);
   }
   return result;
 }

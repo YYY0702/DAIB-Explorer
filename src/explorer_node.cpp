@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -87,6 +88,7 @@ private:
   sensor_msgs::PointCloud2ConstPtr latest_cloud_;
   ros::WallTime last_odom_receive_;
   ros::WallTime last_cloud_receive_;
+  ros::WallTime last_ready_publish_;
   uint64_t cloud_sequence_ = 0;
   uint64_t processed_cloud_sequence_ = 0;
   bool degenerate_ = true;
@@ -106,10 +108,12 @@ private:
   std::string generation_topic_ = "/daib_explorer/generation";
   double map_update_rate_hz_ = 10.0;
   double input_timeout_s_ = 1.0;
+  double ready_heartbeat_rate_hz_ = 1.0;
   double max_input_stamp_skew_s_ = 0.2;
   int max_cloud_points_to_convert_ = 6000;
   int max_published_frontiers_ = 2000;
-  int max_published_planning_points_ = 20000;
+  double planning_output_radius_m_ = 12.0;
+  int max_published_planning_points_ = 6000;
   bool ready_ = false;
   bool ready_initialized_ = false;
 
@@ -132,19 +136,27 @@ private:
 
     private_nh_.param("map_update_rate_hz", map_update_rate_hz_, 10.0);
     private_nh_.param("input_timeout_s", input_timeout_s_, 1.0);
+    private_nh_.param("ready_heartbeat_rate_hz",
+                      ready_heartbeat_rate_hz_,
+                      ready_heartbeat_rate_hz_);
     private_nh_.param(
         "max_input_stamp_skew_s", max_input_stamp_skew_s_, 0.2);
     private_nh_.param(
         "max_cloud_points_to_convert", max_cloud_points_to_convert_, 6000);
     private_nh_.param(
         "max_published_frontiers", max_published_frontiers_, 2000);
+    private_nh_.param("planning_output_radius_m",
+                      planning_output_radius_m_,
+                      planning_output_radius_m_);
     private_nh_.param("max_published_planning_points",
-                      max_published_planning_points_, 20000);
+                      max_published_planning_points_, 6000);
     map_update_rate_hz_ = std::max(0.2, map_update_rate_hz_);
     input_timeout_s_ = std::max(0.1, input_timeout_s_);
+    ready_heartbeat_rate_hz_ = std::max(0.1, ready_heartbeat_rate_hz_);
     max_input_stamp_skew_s_ = std::max(0.0, max_input_stamp_skew_s_);
     max_cloud_points_to_convert_ = std::max(64, max_cloud_points_to_convert_);
     max_published_frontiers_ = std::max(1, max_published_frontiers_);
+    planning_output_radius_m_ = std::max(1.0, planning_output_radius_m_);
     max_published_planning_points_ =
         std::max(1, max_published_planning_points_);
 
@@ -286,9 +298,14 @@ private:
 
   void publishReady(bool value)
   {
-    if (ready_initialized_ && ready_ == value) return;
+    const ros::WallTime now = ros::WallTime::now();
+    const double heartbeat_period = 1.0 / ready_heartbeat_rate_hz_;
+    if (ready_initialized_ && ready_ == value &&
+        (now - last_ready_publish_).toSec() < heartbeat_period)
+      return;
     ready_initialized_ = true;
     ready_ = value;
+    last_ready_publish_ = now;
     std_msgs::Bool message;
     message.data = value;
     ready_pub_.publish(message);
@@ -443,6 +460,8 @@ private:
     if (planning_cloud_pub_.getNumSubscribers() > 0)
       publishPointCloud(
           core_->occupiedPoints(
+              position,
+              planning_output_radius_m_,
               static_cast<std::size_t>(max_published_planning_points_)),
           cloud->header, planning_cloud_pub_);
 
@@ -456,6 +475,11 @@ private:
       {
         geometry_msgs::PoseStamped goal;
         goal.header = cloud->header;
+        // Keep the generation atomic with the goal itself.  The standalone
+        // UInt64 topic remains available for monitoring, while header.seq
+        // lets a planner adapter reject duplicate latched goals without
+        // racing a second subscription.
+        goal.header.seq = static_cast<std::uint32_t>(decision.generation);
         goal.pose.position.x = decision.position.x;
         goal.pose.position.y = decision.position.y;
         goal.pose.position.z = decision.position.z;

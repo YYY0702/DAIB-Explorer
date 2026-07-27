@@ -20,10 +20,12 @@ robot_id: 0
 # Use 10 Hz for behavior parity; reduce to 5 Hz only after board profiling.
 map_update_rate_hz: 10.0
 input_timeout_s: 1.0
+ready_heartbeat_rate_hz: 1.0
 max_input_stamp_skew_s: 0.2
 max_cloud_points_to_convert: 6000
 max_published_frontiers: 2000
-max_published_planning_points: 20000
+planning_output_radius_m: 12.0
+max_published_planning_points: 6000
 
 # High-frequency rolling occupancy map used by frontier selection and later by
 # an EGO-Swarm adapter. It is intentionally independent of the SLAM map.

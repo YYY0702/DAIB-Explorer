@@ -10,7 +10,7 @@ from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry
 from sensor_msgs import point_cloud2
 from sensor_msgs.msg import PointCloud2
-from std_msgs.msg import Bool, Float64, Header
+from std_msgs.msg import Bool, Float64, Header, UInt64
 
 
 class RuntimeContractTest(unittest.TestCase):
@@ -18,6 +18,7 @@ class RuntimeContractTest(unittest.TestCase):
         self._lock = threading.Lock()
         self._ready_history = []
         self._goal = None
+        self._generation = None
         self._frontier = None
         self._odom_pub = rospy.Publisher(
             "/daib_slam/odom", Odometry, queue_size=1
@@ -49,6 +50,12 @@ class RuntimeContractTest(unittest.TestCase):
             self._frontier_callback,
             queue_size=1,
         )
+        self._generation_sub = rospy.Subscriber(
+            "/daib_explorer/generation",
+            UInt64,
+            self._generation_callback,
+            queue_size=1,
+        )
 
     def _ready_callback(self, message):
         with self._lock:
@@ -61,6 +68,10 @@ class RuntimeContractTest(unittest.TestCase):
     def _frontier_callback(self, message):
         with self._lock:
             self._frontier = message
+
+    def _generation_callback(self, message):
+        with self._lock:
+            self._generation = message.data
 
     def _publish_frame(self):
         stamp = rospy.Time.now()
@@ -92,6 +103,7 @@ class RuntimeContractTest(unittest.TestCase):
                 if (
                     True in self._ready_history
                     and self._goal is not None
+                    and self._generation is not None
                     and self._frontier is not None
                     and self._frontier.width > 0
                 ):
@@ -104,6 +116,7 @@ class RuntimeContractTest(unittest.TestCase):
             self.assertIsNotNone(self._frontier)
             self.assertGreater(self._frontier.width, 0)
             self.assertEqual(self._goal.header.frame_id, "camera_init")
+            self.assertEqual(self._goal.header.seq, self._generation)
             self.assertEqual(self._frontier.header.frame_id, "camera_init")
 
         stale_deadline = rospy.Time.now() + rospy.Duration(2.0)

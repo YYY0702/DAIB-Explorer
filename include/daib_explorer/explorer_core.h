@@ -144,7 +144,8 @@ public:
               const std::vector<Vec3> &points, double timestamp);
   bool consumeDecision(GoalDecision &decision);
   std::vector<Vec3> frontierPoints(std::size_t limit) const;
-  std::vector<Vec3> occupiedPoints(std::size_t limit) const;
+  std::vector<Vec3> occupiedPoints(const Vec3 &position, double radius,
+                                   std::size_t limit) const;
 
   const ExplorerStats &stats() const { return stats_; }
   const std::vector<SubmapSummary> &submaps() const { return submaps_; }

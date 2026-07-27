@@ -45,17 +45,27 @@ Outputs:
 
 | Topic | Type | Consumer |
 |---|---|---|
-| `/daib_explorer/goal` | `geometry_msgs/PoseStamped` | Later EGO-Swarm adapter |
+| `/daib_explorer/goal` | `geometry_msgs/PoseStamped` | EGO-Swarm adapter; `header.seq` carries the goal generation |
 | `/daib_explorer/frontiers` | `sensor_msgs/PointCloud2` | RViz / validation |
 | `/daib_explorer/planning_cloud` | `sensor_msgs/PointCloud2` | Rolling occupied-voxel centers for local planning |
-| `/daib_explorer/ready` | `std_msgs/Bool` | Planner watchdog |
+| `/daib_explorer/ready` | `std_msgs/Bool` | Planner watchdog; latched state plus 1 Hz heartbeat |
 | `/daib_explorer/state` | `std_msgs/String` | Validation/debug |
 | `/daib_explorer/generation` | `std_msgs/UInt64` | Suppress duplicate replans |
+
+The EGO planning cloud is a view of occupied cells within 12 m of the current
+vehicle position, capped at 6000 points by default. This limits ROS
+serialization and local-planner work without pruning the Explorer's rolling
+occupancy map, frontier set or long-term coverage memory.
 
 The odometry and cloud are generated from the same LIO update and must have
 matching timestamps and `header.frame_id`. The current FAST-LIVO2 configuration
 publishes both in `camera_init`; a mismatch is rejected instead of silently
 planning in mixed coordinate frames.
+
+`/daib_explorer/goal` and `/daib_explorer/generation` carry the same generation
+number. Embedding it in `PoseStamped.header.seq` makes the goal and its
+deduplication key atomic for the planner adapter; the UInt64 topic is retained
+for monitoring and future multi-UAV transports.
 
 ## Build and run
 
@@ -79,7 +89,8 @@ pre-EGO acceptance test.
 ## Safety boundary
 
 The published goal is a task-level destination, not a dynamically feasible
-trajectory. Do not connect it directly to PX4. The next module must validate it
-against the local map, generate a collision-free trajectory with EGO-Swarm, and
-stop the aircraft whenever `/daib_explorer/ready` is false or the goal timestamp
-is stale.
+trajectory. Do not connect it directly to PX4. Use the DAIB adapter and
+resource-constrained launch in `ego-planner-swarmYYY` to validate the goal,
+consume the local occupied cloud and generate a collision-free B-spline.
+The resulting `PositionCommand` is still a controller-facing interface rather
+than a direct PX4 setpoint connection.

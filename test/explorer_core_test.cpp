@@ -142,6 +142,25 @@ TEST(ExplorerCore, RunsIndependentMultiRateSchedule)
   EXPECT_EQ(explorer.stats().long_term_update_cycles, 1U);
 }
 
+TEST(ExplorerCore, BoundsPlannerCloudAroundCurrentPosition)
+{
+  ExplorerConfig config;
+  ExplorerCore explorer(config);
+  explorer.update(
+      {0.0, 0.0, 0.0}, {},
+      {{4.0, 0.0, 0.0}, {10.0, 0.0, 0.0}}, 1.0);
+
+  const std::vector<Vec3> local =
+      explorer.occupiedPoints({0.0, 0.0, 0.0}, 6.0, 100);
+  ASSERT_FALSE(local.empty());
+  for (const Vec3 &point : local)
+  {
+    const double range =
+        std::sqrt(point.x * point.x + point.y * point.y + point.z * point.z);
+    EXPECT_LE(range, 6.0);
+  }
+}
+
 }  // namespace daib_explorer
 
 int main(int argc, char **argv)
