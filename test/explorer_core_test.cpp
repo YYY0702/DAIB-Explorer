@@ -148,7 +148,7 @@ TEST(ExplorerCore, BoundsPlannerCloudAroundCurrentPosition)
   ExplorerCore explorer(config);
   explorer.update(
       {0.0, 0.0, 0.0}, {},
-      {{4.0, 0.0, 0.0}, {10.0, 0.0, 0.0}}, 1.0);
+      {{4.0, 0.0, 0.0}, {0.0, 10.0, 0.0}}, 1.0);
 
   const std::vector<Vec3> local =
       explorer.occupiedPoints({0.0, 0.0, 0.0}, 6.0, 100);

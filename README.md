@@ -45,12 +45,12 @@ Outputs:
 
 | Topic | Type | Consumer |
 |---|---|---|
-| `/daib_explorer/goal` | `geometry_msgs/PoseStamped` | EGO-Swarm adapter; `header.seq` carries the goal generation |
+| `/daib_explorer/goal` | `geometry_msgs/PoseStamped` | EGO-Swarm adapter; timestamp and pose identify the goal |
 | `/daib_explorer/frontiers` | `sensor_msgs/PointCloud2` | RViz / validation |
 | `/daib_explorer/planning_cloud` | `sensor_msgs/PointCloud2` | Rolling occupied-voxel centers for local planning |
 | `/daib_explorer/ready` | `std_msgs/Bool` | Planner watchdog; latched state plus 1 Hz heartbeat |
 | `/daib_explorer/state` | `std_msgs/String` | Validation/debug |
-| `/daib_explorer/generation` | `std_msgs/UInt64` | Suppress duplicate replans |
+| `/daib_explorer/generation` | `std_msgs/UInt64` | Planner acknowledgement and monitoring |
 
 The EGO planning cloud is a view of occupied cells within 12 m of the current
 vehicle position, capped at 6000 points by default. This limits ROS
@@ -62,10 +62,11 @@ matching timestamps and `header.frame_id`. The current FAST-LIVO2 configuration
 publishes both in `camera_init`; a mismatch is rejected instead of silently
 planning in mixed coordinate frames.
 
-`/daib_explorer/goal` and `/daib_explorer/generation` carry the same generation
-number. Embedding it in `PoseStamped.header.seq` makes the goal and its
-deduplication key atomic for the planner adapter; the UInt64 topic is retained
-for monitoring and future multi-UAV transports.
+`/daib_explorer/generation` is the application-level goal generation used for
+monitoring and acknowledgement. ROS1 owns `PoseStamped.header.seq`, so planner
+adapters must not use that transport field as the DAIB generation. The EGO
+adapter identifies duplicate goals by timestamp and pose and consumes the
+separate generation topic for telemetry.
 
 ## Build and run
 

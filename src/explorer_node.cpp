@@ -475,16 +475,13 @@ private:
       {
         geometry_msgs::PoseStamped goal;
         goal.header = cloud->header;
-        // Keep the generation atomic with the goal itself.  The standalone
-        // UInt64 topic remains available for monitoring, while header.seq
-        // lets a planner adapter reject duplicate latched goals without
-        // racing a second subscription.
-        goal.header.seq = static_cast<std::uint32_t>(decision.generation);
         goal.pose.position.x = decision.position.x;
         goal.pose.position.y = decision.position.y;
         goal.pose.position.z = decision.position.z;
         goal.pose.orientation = tf::createQuaternionMsgFromYaw(decision.yaw);
         goal_pub_.publish(goal);
+        // ROS1 owns Header.seq and may overwrite it during publication.
+        // Keep the application-level generation on its dedicated topic.
         std_msgs::UInt64 generation;
         generation.data = decision.generation;
         generation_pub_.publish(generation);

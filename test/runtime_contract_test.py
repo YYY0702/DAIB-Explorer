@@ -116,7 +116,8 @@ class RuntimeContractTest(unittest.TestCase):
             self.assertIsNotNone(self._frontier)
             self.assertGreater(self._frontier.width, 0)
             self.assertEqual(self._goal.header.frame_id, "camera_init")
-            self.assertEqual(self._goal.header.seq, self._generation)
+            self.assertFalse(self._goal.header.stamp.is_zero())
+            self.assertEqual(self._generation, 1)
             self.assertEqual(self._frontier.header.frame_id, "camera_init")
 
         stale_deadline = rospy.Time.now() + rospy.Duration(2.0)
