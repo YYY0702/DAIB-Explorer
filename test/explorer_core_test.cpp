@@ -44,6 +44,20 @@ TEST(ExplorerCore, ScalesBudgetFromLioRuntime)
                 config.overload_budget_scale)));
 }
 
+TEST(ExplorerCore, EntersBusyBudgetAtValidatedBoardRuntime)
+{
+  ExplorerConfig config;
+  ExplorerCore explorer(config);
+  explorer.setHealth(false, 0.2, 30.0);
+  explorer.update({0.0, 0.0, 0.0}, {}, {{5.0, 0.0, 0.0}}, 1.0);
+  EXPECT_DOUBLE_EQ(explorer.stats().budget_scale,
+                   config.busy_budget_scale);
+  EXPECT_EQ(explorer.stats().effective_raycasts,
+            static_cast<int>(std::lround(
+                config.max_raycasts_per_update *
+                config.busy_budget_scale)));
+}
+
 TEST(ExplorerCore, PreservesObservedCoverageAndFullRotationSubmaps)
 {
   ExplorerConfig config;
@@ -159,6 +173,32 @@ TEST(ExplorerCore, BoundsPlannerCloudAroundCurrentPosition)
         std::sqrt(point.x * point.x + point.y * point.y + point.z * point.z);
     EXPECT_LE(range, 6.0);
   }
+}
+
+TEST(ExplorerCore, ClearsStaleOccupancyAtCurrentVehicleVoxel)
+{
+  ExplorerConfig config;
+  config.planning_voxel_size_m = 0.5;
+  config.max_raycasts_per_update = 64;
+  ExplorerCore explorer(config);
+  const Vec3 future_position{2.25, 0.25, 0.25};
+
+  // Accumulate a strong endpoint hit in the voxel that the vehicle will
+  // occupy later.
+  for (int update = 0; update < 3; ++update)
+  {
+    explorer.update({0.25, 0.25, 0.25}, {}, {future_position},
+                    1.0 + update);
+  }
+  ASSERT_EQ(explorer.stats().occupied_cells, 1U);
+
+  // One vehicle observation must immediately override that stale hit. The old
+  // one-step miss update needed several cycles and leaked the voxel to EGO.
+  explorer.update(future_position, {}, {}, 4.0);
+  const std::vector<Vec3> occupied =
+      explorer.occupiedPoints(future_position, 1.0, 100);
+  EXPECT_TRUE(occupied.empty());
+  EXPECT_EQ(explorer.stats().occupied_cells, 0U);
 }
 
 }  // namespace daib_explorer

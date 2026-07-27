@@ -74,8 +74,8 @@ struct ExplorerConfig
   double goal_switch_margin = 0.15;
 
   bool dynamic_budget_enabled = true;
-  double lio_busy_threshold_ms = 90.0;
-  double lio_overload_threshold_ms = 110.0;
+  double lio_busy_threshold_ms = 25.0;
+  double lio_overload_threshold_ms = 35.0;
   double lio_time_ema_alpha = 0.20;
   double busy_budget_scale = 0.50;
   double overload_budget_scale = 0.25;

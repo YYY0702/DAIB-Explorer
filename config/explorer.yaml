@@ -65,8 +65,10 @@ goal_switch_margin: 0.15
 # Joint compute budget: reduce exploration work while LIO is busy. This never
 # changes FAST-LIVO2 itself; it only consumes its runtime telemetry.
 dynamic_budget_enabled: true
-lio_busy_threshold_ms: 90.0
-lio_overload_threshold_ms: 110.0
+# The validated board logs show a 17 ms EMA and roughly 33 ms peaks. The old
+# 90/110 ms thresholds made both reduced-budget states unreachable.
+lio_busy_threshold_ms: 25.0
+lio_overload_threshold_ms: 35.0
 lio_time_ema_alpha: 0.20
 busy_budget_scale: 0.50
 overload_budget_scale: 0.25
