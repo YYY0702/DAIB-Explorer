@@ -1,4 +1,5 @@
 #include "daib_explorer/explorer_core.h"
+#include "daib_explorer/pvbsm_memory.h"
 
 #include <cmath>
 #include <vector>
@@ -199,6 +200,74 @@ TEST(ExplorerCore, ClearsStaleOccupancyAtCurrentVehicleVoxel)
       explorer.occupiedPoints(future_position, 1.0, 100);
   EXPECT_TRUE(occupied.empty());
   EXPECT_EQ(explorer.stats().occupied_cells, 0U);
+}
+
+TEST(PvbsmMemory, AppliesVersionsDeletionAndNegativeSubmaps)
+{
+  PvbsmMemory memory(100);
+  PvbsmRecord positive;
+  positive.source_id = 3;
+  positive.root[0] = -1;
+  positive.revision = 1;
+  positive.kind = 0;
+  positive.submap_edge_roots = 8;
+  memory.applyDelta({positive});
+  EXPECT_EQ(memory.stats().root_count, 1U);
+  EXPECT_EQ(memory.stats().plane_count, 1U);
+  EXPECT_EQ(memory.stats().submap_count, 1U);
+
+  // Same and older revisions are idempotently rejected per root.
+  memory.applyDelta({positive});
+  EXPECT_EQ(memory.stats().rejected_stale_root_updates, 1U);
+  EXPECT_EQ(memory.stats().record_count, 1U);
+
+  PvbsmRecord zero_side = positive;
+  zero_side.root[0] = 0;
+  memory.applyDelta({zero_side});
+  // floor(-1 / 8)=-1, not zero: the roots belong to different submaps.
+  EXPECT_EQ(memory.stats().submap_count, 2U);
+
+  PvbsmRecord deletion = positive;
+  deletion.revision = 2;
+  deletion.kind = 2;
+  memory.applyDelta({deletion});
+  EXPECT_EQ(memory.stats().root_count, 1U);
+  EXPECT_EQ(memory.stats().deleted_roots, 1U);
+}
+
+TEST(PvbsmMemory, EvictsOldestRootsAtRecordCapacity)
+{
+  PvbsmMemory memory(1);
+  PvbsmRecord first;
+  first.revision = 1;
+  first.kind = 1;
+  PvbsmRecord second = first;
+  second.root[0] = 1;
+  second.revision = 2;
+  memory.applyDelta({first, second});
+  EXPECT_EQ(memory.stats().record_count, 1U);
+  EXPECT_EQ(memory.stats().root_count, 1U);
+  EXPECT_EQ(memory.stats().capacity_evictions, 1U);
+}
+
+TEST(PvbsmMemory, AcceptsRevisionResetFromNewSenderSession)
+{
+  PvbsmMemory memory(10);
+  PvbsmRecord old_session;
+  old_session.source_id = 2;
+  old_session.revision = 20;
+  old_session.kind = 0;
+  memory.applyDelta({old_session});
+
+  PvbsmRecord new_session = old_session;
+  new_session.revision = 1;
+  new_session.kind = 1;
+  new_session.flags = 2U;
+  memory.applyDelta({new_session});
+  EXPECT_EQ(memory.stats().source_session_resets, 1U);
+  EXPECT_EQ(memory.stats().record_count, 1U);
+  EXPECT_EQ(memory.stats().plane_count, 0U);
+  EXPECT_EQ(memory.stats().residual_count, 1U);
 }
 
 }  // namespace daib_explorer

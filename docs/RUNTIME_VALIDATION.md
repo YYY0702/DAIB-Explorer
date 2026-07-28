@@ -13,6 +13,9 @@ rostopic hz /daib_slam/planning_cloud
 rostopic echo -n 1 /daib_slam/odom/header
 rostopic echo -n 1 /daib_slam/planning_cloud/header
 rostopic echo /daib_explorer/ready
+rostopic hz /daib_slam/pvbsm_delta
+rostopic echo /daib_slam/pvbsm_stats
+rostopic echo /daib_explorer/pvbsm_memory_stats
 ```
 
 Acceptance criteria:
@@ -23,6 +26,10 @@ Acceptance criteria:
   exactly equal);
 - `ready` becomes `true` after both inputs arrive and becomes `false` within
   `input_timeout_s` after FAST-LIVO2 stops.
+- PVBSM is approximately 1 Hz, its payload stays at or below 32 KiB normally
+  and 48 KiB while degenerate, and the Explorer root/record counters grow.
+- PVBSM pending roots may spike but must not grow continuously; exporter time
+  should normally remain within `daib_pvbsm/export_budget_ms`.
 
 ## 2. Exploration behavior
 
@@ -56,9 +63,9 @@ Run the same bag in three configurations:
 
 Record LIO mean/P95/P99 latency, total CPU, RSS and achieved rate. FAST-LIVO2
 alone should match its pre-decoupling localization output except that the old
-in-process exploration work is gone. With an explorer subscriber, the only
-new FAST-LIVO2 work is sampling and serializing at most
-`daib_interface/max_planning_points` points.
+in-process exploration work is gone. With an explorer subscriber, FAST-LIVO2
+serializes the bounded planning cloud and runs the low-rate, time-budgeted
+PVBSM dirty-root exporter.
 
 Kill DAIB-Explorer while the bag is running. `/aft_mapped_to_init`, the regular
 FAST-LIVO2 map outputs and trajectory must continue. Restart the explorer; it
@@ -75,6 +82,7 @@ or configuration problem, not an intended data-flow dependency.
 ## Known boundary
 
 The rolling occupancy map is reconstructible and is intentionally lost if the
-explorer process restarts. Coarse visited/observed memory and submap summaries
-currently live in RAM; persistent storage and multi-UAV exchange are later
-extensions. None of these affect SLAM localization state.
+explorer process restarts. Coarse visited/observed memory, submap summaries and
+PVBSM geometry currently live in RAM. Persistent storage and the radio
+transport/fusion layer are later extensions. None of these affect SLAM
+localization state.

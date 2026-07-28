@@ -12,11 +12,13 @@ FAST-LIVO2YYY (10 Hz target, localization critical)
         | standard ROS1 messages, no shared source library
         | synchronized odom + bounded planning cloud
         | + degeneracy + LIO runtime
+        | + 1 Hz DAIB-PVBSM delta
         v
 DAIB-Explorer (default 10 Hz, best effort)
   - rolling occupancy map
   - incremental frontier set
   - coverage memory and submap summaries
+  - bounded planar/residual-voxel long-term geometry cache
   - degeneracy-aware information-budgeted goal selection
         |
         | PoseStamped goal + planning cloud + ready watchdog
@@ -42,9 +44,10 @@ threads, so rate separation does not introduce map races.
    `map_update_rate_hz`, and used for collision/frontier queries.
 2. **Active frontier set**: updated only around cells whose occupancy state
    changed. Per-update work is capped by `frontier_update_budget`.
-3. **Long-term exploration memory**: coarse visited and LiDAR-observed cells
-   plus versioned submap summaries with full 3D anchor orientation. It prevents
-   repeated coverage without copying FAST-LIVO2's visual feature map.
+3. **Long-term exploration memory**: coarse visited and LiDAR-observed cells,
+   versioned submap summaries, and the bounded DAIB-PVBSM plane/residual cache.
+   It prevents repeated coverage and retains compact geometry without copying
+   FAST-LIVO2's estimator octree or visual feature map.
 
 The first two layers can be discarded/rebuilt if the explorer restarts; SLAM
 localization is unaffected. Persisting and exchanging the third layer is the
@@ -60,9 +63,9 @@ discarded rather than queued.
 
 ## Multi-UAV extension point
 
-Each submap ID reserves the upper 16 bits for `robot_id` and lower bits for a
-monotonic local ID. A later transport message should contain ID, version,
-anchor, bounds, coarse coverage and compressed occupancy/frontier deltas. Merge
-that data into a separate remote-memory index; never insert remote voxels into
-the high-frequency local rolling map without frame alignment and version
-checks.
+The implemented 64-byte PVBSM record carries `source_id`, revision, root voxel
+coordinates and submap edge length. The receiver derives a spatial submap key,
+rejects stale per-root revisions and keeps remote/lightweight geometry outside
+the high-frequency local rolling map. A later radio transport still needs
+frame alignment, packet integrity, missing-revision recovery and conflict
+fusion before records from another UAV are accepted.

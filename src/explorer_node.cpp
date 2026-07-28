@@ -1,4 +1,5 @@
 #include "daib_explorer/explorer_core.h"
+#include "daib_explorer/pvbsm_memory.h"
 
 #include <algorithm>
 #include <cmath>
@@ -21,6 +22,7 @@
 #include <std_msgs/Float64.h>
 #include <std_msgs/String.h>
 #include <std_msgs/UInt64.h>
+#include <std_msgs/UInt64MultiArray.h>
 #include <tf/transform_datatypes.h>
 
 namespace daib_explorer
@@ -34,6 +36,9 @@ public:
     ExplorerConfig config;
     readParameters(config);
     core_ = std::make_unique<ExplorerCore>(config);
+    if (pvbsm_memory_enabled_)
+      pvbsm_memory_ = std::make_unique<PvbsmMemory>(
+          static_cast<std::size_t>(pvbsm_memory_max_records_));
 
     odom_sub_ = nh_.subscribe(odom_topic_, 5, &ExplorerNode::odomCallback, this);
     cloud_sub_ =
@@ -44,6 +49,9 @@ public:
         nh_.subscribe(score_topic_, 1, &ExplorerNode::scoreCallback, this);
     runtime_sub_ =
         nh_.subscribe(runtime_topic_, 1, &ExplorerNode::runtimeCallback, this);
+    if (pvbsm_memory_)
+      pvbsm_sub_ = nh_.subscribe(
+          pvbsm_topic_, 2, &ExplorerNode::pvbsmCallback, this);
 
     goal_pub_ =
         nh_.advertise<geometry_msgs::PoseStamped>(goal_topic_, 1, true);
@@ -55,6 +63,9 @@ public:
     state_pub_ = nh_.advertise<std_msgs::String>(state_topic_, 1, true);
     generation_pub_ =
         nh_.advertise<std_msgs::UInt64>(generation_topic_, 1, true);
+    if (pvbsm_memory_)
+      pvbsm_stats_pub_ = nh_.advertise<std_msgs::UInt64MultiArray>(
+          pvbsm_stats_topic_, 1, true);
 
     map_timer_ = nh_.createTimer(
         ros::Duration(1.0 / map_update_rate_hz_),
@@ -62,7 +73,9 @@ public:
     publishReady(false);
     ROS_INFO_STREAM("[ DAIB Explorer ] isolated node ready; odom="
                     << odom_topic_ << ", cloud=" << cloud_topic_
-                    << ", map_update_rate=" << map_update_rate_hz_ << " Hz");
+                    << ", map_update_rate=" << map_update_rate_hz_ << " Hz"
+                    << ", pvbsm_memory="
+                    << (pvbsm_memory_ ? "enabled" : "disabled"));
   }
 
 private:
@@ -73,17 +86,21 @@ private:
   ros::Subscriber degenerate_sub_;
   ros::Subscriber score_sub_;
   ros::Subscriber runtime_sub_;
+  ros::Subscriber pvbsm_sub_;
   ros::Publisher goal_pub_;
   ros::Publisher frontiers_pub_;
   ros::Publisher planning_cloud_pub_;
   ros::Publisher ready_pub_;
   ros::Publisher state_pub_;
   ros::Publisher generation_pub_;
+  ros::Publisher pvbsm_stats_pub_;
   ros::Timer map_timer_;
   std::unique_ptr<ExplorerCore> core_;
+  std::unique_ptr<PvbsmMemory> pvbsm_memory_;
 
   std::mutex input_mutex_;
   std::mutex update_mutex_;
+  std::mutex pvbsm_mutex_;
   nav_msgs::OdometryConstPtr latest_odom_;
   sensor_msgs::PointCloud2ConstPtr latest_cloud_;
   ros::WallTime last_odom_receive_;
@@ -100,12 +117,14 @@ private:
   std::string degenerate_topic_ = "/daib_slam/degenerate";
   std::string score_topic_ = "/daib_slam/degeneracy_score";
   std::string runtime_topic_ = "/daib_slam/lio_runtime_ms";
+  std::string pvbsm_topic_ = "/daib_slam/pvbsm_delta";
   std::string goal_topic_ = "/daib_explorer/goal";
   std::string frontiers_topic_ = "/daib_explorer/frontiers";
   std::string planning_cloud_topic_ = "/daib_explorer/planning_cloud";
   std::string ready_topic_ = "/daib_explorer/ready";
   std::string state_topic_ = "/daib_explorer/state";
   std::string generation_topic_ = "/daib_explorer/generation";
+  std::string pvbsm_stats_topic_ = "/daib_explorer/pvbsm_memory_stats";
   double map_update_rate_hz_ = 10.0;
   double input_timeout_s_ = 1.0;
   double ready_heartbeat_rate_hz_ = 1.0;
@@ -114,6 +133,9 @@ private:
   int max_published_frontiers_ = 2000;
   double planning_output_radius_m_ = 12.0;
   int max_published_planning_points_ = 6000;
+  bool pvbsm_memory_enabled_ = true;
+  int pvbsm_memory_max_records_ = 200000;
+  int max_pvbsm_records_per_delta_ = 2048;
   bool ready_ = false;
   bool ready_initialized_ = false;
 
@@ -125,6 +147,7 @@ private:
         "topics/degenerate", degenerate_topic_, degenerate_topic_);
     private_nh_.param("topics/degeneracy_score", score_topic_, score_topic_);
     private_nh_.param("topics/lio_runtime_ms", runtime_topic_, runtime_topic_);
+    private_nh_.param("topics/pvbsm_delta", pvbsm_topic_, pvbsm_topic_);
     private_nh_.param("topics/goal", goal_topic_, goal_topic_);
     private_nh_.param("topics/frontiers", frontiers_topic_, frontiers_topic_);
     private_nh_.param(
@@ -133,6 +156,10 @@ private:
     private_nh_.param("topics/state", state_topic_, state_topic_);
     private_nh_.param(
         "topics/generation", generation_topic_, generation_topic_);
+    private_nh_.param(
+        "topics/pvbsm_memory_stats",
+        pvbsm_stats_topic_,
+        pvbsm_stats_topic_);
 
     private_nh_.param("map_update_rate_hz", map_update_rate_hz_, 10.0);
     private_nh_.param("input_timeout_s", input_timeout_s_, 1.0);
@@ -150,6 +177,18 @@ private:
                       planning_output_radius_m_);
     private_nh_.param("max_published_planning_points",
                       max_published_planning_points_, 6000);
+    private_nh_.param(
+        "pvbsm_memory_enabled",
+        pvbsm_memory_enabled_,
+        pvbsm_memory_enabled_);
+    private_nh_.param(
+        "pvbsm_memory_max_records",
+        pvbsm_memory_max_records_,
+        pvbsm_memory_max_records_);
+    private_nh_.param(
+        "max_pvbsm_records_per_delta",
+        max_pvbsm_records_per_delta_,
+        max_pvbsm_records_per_delta_);
     map_update_rate_hz_ = std::max(0.2, map_update_rate_hz_);
     input_timeout_s_ = std::max(0.1, input_timeout_s_);
     ready_heartbeat_rate_hz_ = std::max(0.1, ready_heartbeat_rate_hz_);
@@ -159,6 +198,9 @@ private:
     planning_output_radius_m_ = std::max(1.0, planning_output_radius_m_);
     max_published_planning_points_ =
         std::max(1, max_published_planning_points_);
+    pvbsm_memory_max_records_ = std::max(1, pvbsm_memory_max_records_);
+    max_pvbsm_records_per_delta_ =
+        std::max(1, max_pvbsm_records_per_delta_);
 
     private_nh_.param("robot_id", config.robot_id, config.robot_id);
     private_nh_.param("planning_voxel_size_m",
@@ -294,6 +336,117 @@ private:
   {
     std::lock_guard<std::mutex> lock(input_mutex_);
     lio_runtime_ms_ = message->data;
+  }
+
+  void pvbsmCallback(const sensor_msgs::PointCloud2ConstPtr &message)
+  {
+    if (!pvbsm_memory_) return;
+    std::vector<PvbsmRecord> records;
+    const std::size_t count =
+        static_cast<std::size_t>(message->width) * message->height;
+    records.reserve(std::min<std::size_t>(
+        count, static_cast<std::size_t>(max_pvbsm_records_per_delta_)));
+    try
+    {
+      sensor_msgs::PointCloud2ConstIterator<float> x(*message, "x");
+      sensor_msgs::PointCloud2ConstIterator<float> y(*message, "y");
+      sensor_msgs::PointCloud2ConstIterator<float> z(*message, "z");
+      sensor_msgs::PointCloud2ConstIterator<float> normal_x(
+          *message, "normal_x");
+      sensor_msgs::PointCloud2ConstIterator<float> normal_y(
+          *message, "normal_y");
+      sensor_msgs::PointCloud2ConstIterator<float> normal_z(
+          *message, "normal_z");
+      sensor_msgs::PointCloud2ConstIterator<float> extent_x(
+          *message, "extent_x");
+      sensor_msgs::PointCloud2ConstIterator<float> extent_y(
+          *message, "extent_y");
+      sensor_msgs::PointCloud2ConstIterator<float> thickness(
+          *message, "thickness");
+      sensor_msgs::PointCloud2ConstIterator<float> confidence(
+          *message, "confidence");
+      sensor_msgs::PointCloud2ConstIterator<int32_t> root_x(
+          *message, "root_x");
+      sensor_msgs::PointCloud2ConstIterator<int32_t> root_y(
+          *message, "root_y");
+      sensor_msgs::PointCloud2ConstIterator<int32_t> root_z(
+          *message, "root_z");
+      sensor_msgs::PointCloud2ConstIterator<uint32_t> revision(
+          *message, "revision");
+      sensor_msgs::PointCloud2ConstIterator<uint16_t> point_count(
+          *message, "point_count");
+      sensor_msgs::PointCloud2ConstIterator<uint16_t> source_id(
+          *message, "source_id");
+      sensor_msgs::PointCloud2ConstIterator<uint8_t> layer(
+          *message, "layer");
+      sensor_msgs::PointCloud2ConstIterator<uint8_t> kind(
+          *message, "kind");
+      sensor_msgs::PointCloud2ConstIterator<uint8_t> flags(
+          *message, "flags");
+      sensor_msgs::PointCloud2ConstIterator<uint8_t> submap_edge(
+          *message, "submap_edge_roots");
+
+      for (; x != x.end() &&
+             records.size() <
+                 static_cast<std::size_t>(max_pvbsm_records_per_delta_);
+           ++x, ++y, ++z, ++normal_x, ++normal_y, ++normal_z,
+           ++extent_x, ++extent_y, ++thickness, ++confidence,
+           ++root_x, ++root_y, ++root_z, ++revision, ++point_count,
+           ++source_id, ++layer, ++kind, ++flags, ++submap_edge)
+      {
+        PvbsmRecord record;
+        record.center[0] = *x;
+        record.center[1] = *y;
+        record.center[2] = *z;
+        record.normal[0] = *normal_x;
+        record.normal[1] = *normal_y;
+        record.normal[2] = *normal_z;
+        record.extent_x = *extent_x;
+        record.extent_y = *extent_y;
+        record.thickness = *thickness;
+        record.confidence = *confidence;
+        record.root[0] = *root_x;
+        record.root[1] = *root_y;
+        record.root[2] = *root_z;
+        record.revision = *revision;
+        record.point_count = *point_count;
+        record.source_id = *source_id;
+        record.layer = *layer;
+        record.kind = *kind;
+        record.flags = *flags;
+        record.submap_edge_roots = *submap_edge;
+        records.push_back(record);
+      }
+    }
+    catch (const std::runtime_error &error)
+    {
+      ROS_ERROR_THROTTLE(
+          2.0, "[ DAIB Explorer ] invalid PVBSM schema: %s", error.what());
+      return;
+    }
+
+    std::lock_guard<std::mutex> lock(pvbsm_mutex_);
+    pvbsm_memory_->applyDelta(records);
+    const PvbsmMemoryStats &stats = pvbsm_memory_->stats();
+    std_msgs::UInt64MultiArray stats_message;
+    stats_message.data = {
+        stats.root_count,
+        stats.record_count,
+        stats.plane_count,
+        stats.residual_count,
+        stats.submap_count,
+        stats.accepted_root_updates,
+        stats.rejected_stale_root_updates,
+        stats.deleted_roots,
+        stats.capacity_evictions,
+        stats.source_session_resets};
+    pvbsm_stats_pub_.publish(stats_message);
+    ROS_INFO_STREAM_THROTTLE(
+        1.0, "[ DAIB Explorer PVBSM ] roots=" << stats.root_count
+                 << ", records=" << stats.record_count
+                 << ", submaps=" << stats.submap_count
+                 << ", stale_rejected="
+                 << stats.rejected_stale_root_updates);
   }
 
   void publishReady(bool value)

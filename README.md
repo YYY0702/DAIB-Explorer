@@ -40,6 +40,7 @@ Inputs:
 | `/daib_slam/degenerate` | `std_msgs/Bool` | Lidar geometric degeneracy |
 | `/daib_slam/degeneracy_score` | `std_msgs/Float64` | Normalized minimum eigenvalue |
 | `/daib_slam/lio_runtime_ms` | `std_msgs/Float64` | Current LIO latency |
+| `/daib_slam/pvbsm_delta` | `sensor_msgs/PointCloud2` | 1 Hz planar/residual-voxel submap delta |
 
 Outputs:
 
@@ -51,11 +52,18 @@ Outputs:
 | `/daib_explorer/ready` | `std_msgs/Bool` | Planner watchdog; latched state plus 1 Hz heartbeat |
 | `/daib_explorer/state` | `std_msgs/String` | Validation/debug |
 | `/daib_explorer/generation` | `std_msgs/UInt64` | Planner acknowledgement and monitoring |
+| `/daib_explorer/pvbsm_memory_stats` | `std_msgs/UInt64MultiArray` | Bounded long-term lightweight geometry statistics |
 
 The EGO planning cloud is a view of occupied cells within 12 m of the current
 vehicle position, capped at 6000 points by default. This limits ROS
 serialization and local-planner work without pruning the Explorer's rolling
 occupancy map, frontier set or long-term coverage memory.
+
+DAIB-PVBSM runs on a separate low-rate subscriber callback. It stores
+versioned plane primitives and residual voxels by source/root identity, rejects
+stale updates, applies deletion records and groups roots into spatial
+submaps. It does not feed the 10 Hz collision map, so malformed or delayed
+long-term-map traffic cannot alter the current flight-safety path.
 
 The odometry and cloud are generated from the same LIO update and must have
 matching timestamps and `header.frame_id`. The current FAST-LIVO2 configuration

@@ -26,7 +26,7 @@ catkin_package(
 
 include_directories(include ${catkin_INCLUDE_DIRS} ${PCL_INCLUDE_DIRS})
 
-add_library(daib_explorer_core src/explorer_core.cpp)
+add_library(daib_explorer_core src/explorer_core.cpp src/pvbsm_memory.cpp)
 target_link_libraries(daib_explorer_core ${catkin_LIBRARIES})
 
 add_executable(daib_explorer_node src/explorer_node.cpp)

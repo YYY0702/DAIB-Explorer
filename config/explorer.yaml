@@ -6,12 +6,14 @@ topics:
   degenerate: /daib_slam/degenerate
   degeneracy_score: /daib_slam/degeneracy_score
   lio_runtime_ms: /daib_slam/lio_runtime_ms
+  pvbsm_delta: /daib_slam/pvbsm_delta
   goal: /daib_explorer/goal
   frontiers: /daib_explorer/frontiers
   planning_cloud: /daib_explorer/planning_cloud
   ready: /daib_explorer/ready
   state: /daib_explorer/state
   generation: /daib_explorer/generation
+  pvbsm_memory_stats: /daib_explorer/pvbsm_memory_stats
 
 robot_id: 0
 
@@ -26,6 +28,12 @@ max_cloud_points_to_convert: 6000
 max_published_frontiers: 2000
 planning_output_radius_m: 12.0
 max_published_planning_points: 6000
+
+# Low-rate DAIB-PVBSM long-term geometry cache. This callback is independent
+# of the 10 Hz occupancy/frontier loop and never blocks local safety updates.
+pvbsm_memory_enabled: true
+pvbsm_memory_max_records: 200000
+max_pvbsm_records_per_delta: 2048
 
 # High-frequency rolling occupancy map used by frontier selection and later by
 # an EGO-Swarm adapter. It is intentionally independent of the SLAM map.
