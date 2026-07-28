@@ -1,8 +1,11 @@
 #pragma once
 
+#include "daib_explorer/pvbsm_types.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -83,6 +86,15 @@ struct ExplorerConfig
   double degenerate_max_goal_distance_m = 8.0;
   double degenerate_goal_switch_margin = 0.30;
   double degenerate_safe_path_weight = 4.0;
+
+  bool pvbsm_scoring_enabled = true;
+  double pvbsm_root_voxel_size_m = 1.0;
+  int pvbsm_submap_edge_roots = 8;
+  int pvbsm_covered_root_target = 64;
+  double pvbsm_unseen_submap_bonus = 1.0;
+  double pvbsm_submap_coverage_penalty = 2.0;
+  double pvbsm_observed_root_penalty = 1.5;
+  double pvbsm_degenerate_structure_bonus = 0.75;
 };
 
 struct GoalDecision
@@ -132,6 +144,9 @@ struct ExplorerStats
   uint64_t frontier_update_cycles = 0;
   uint64_t goal_evaluation_cycles = 0;
   uint64_t long_term_update_cycles = 0;
+  std::size_t pvbsm_scored_candidates = 0;
+  std::size_t pvbsm_unseen_candidates = 0;
+  double pvbsm_best_adjustment = 0.0;
 };
 
 class ExplorerCore
@@ -139,7 +154,11 @@ class ExplorerCore
 public:
   explicit ExplorerCore(ExplorerConfig config);
 
+  using PvbsmBatchQuery = std::function<std::vector<PvbsmExplorationHint>(
+      const std::vector<PvbsmQueryPoint> &)>;
+
   void setHealth(bool degenerate, double degeneracy_score, double lio_runtime_ms);
+  void setPvbsmBatchQuery(PvbsmBatchQuery query);
   void update(const Vec3 &position, const Quaternion &orientation,
               const std::vector<Vec3> &points, double timestamp);
   bool consumeDecision(GoalDecision &decision);
@@ -182,6 +201,7 @@ private:
   bool goal_reached_ = false;
   bool goal_blocked_ = false;
   bool goal_timeout_ = false;
+  PvbsmBatchQuery pvbsm_batch_query_;
 
   static double distance(const Vec3 &a, const Vec3 &b);
   VoxelKey key(const Vec3 &point, double voxel_size) const;
@@ -195,6 +215,7 @@ private:
   bool segmentBlocked(const Vec3 &start, const Vec3 &end,
                       double *known_free_ratio = nullptr) const;
   double frontierScore(const VoxelKey &key, const Vec3 &position) const;
+  double pvbsmScoreAdjustment(const PvbsmExplorationHint &hint) const;
   void updateSubmap(const Vec3 &position, const Quaternion &orientation,
                     const std::vector<Vec3> &points);
   void updateGoalStatus(const Vec3 &position, double timestamp);

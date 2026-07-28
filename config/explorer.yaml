@@ -35,6 +35,20 @@ pvbsm_memory_enabled: true
 pvbsm_memory_max_records: 200000
 max_pvbsm_records_per_delta: 2048
 
+# PVBSM long-term novelty term used only by 1 Hz frontier goal scoring.
+# root_voxel_size must match FAST-LIVO2 lio/voxel_size, and submap_edge_roots
+# must match FAST-LIVO2 daib_pvbsm/submap_edge_roots.
+pvbsm_scoring_enabled: true
+pvbsm_root_voxel_size_m: 1.0
+pvbsm_submap_edge_roots: 8
+# A surface map does not fill all 8^3 spatial roots. Treat 64 observed roots
+# as a sufficiently mapped submap for the continuous coverage penalty.
+pvbsm_covered_root_target: 64
+pvbsm_unseen_submap_bonus: 1.0
+pvbsm_submap_coverage_penalty: 2.0
+pvbsm_observed_root_penalty: 1.5
+pvbsm_degenerate_structure_bonus: 0.75
+
 # High-frequency rolling occupancy map used by frontier selection and later by
 # an EGO-Swarm adapter. It is intentionally independent of the SLAM map.
 planning_voxel_size_m: 0.5

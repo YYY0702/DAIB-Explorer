@@ -62,8 +62,20 @@ occupancy map, frontier set or long-term coverage memory.
 DAIB-PVBSM runs on a separate low-rate subscriber callback. It stores
 versioned plane primitives and residual voxels by source/root identity, rejects
 stale updates, applies deletion records and groups roots into spatial
-submaps. It does not feed the 10 Hz collision map, so malformed or delayed
-long-term-map traffic cannot alter the current flight-safety path.
+submaps. At the 1 Hz goal-evaluation stage it rewards frontiers in unseen
+submaps and penalizes candidates in well-covered submaps or already represented
+root voxels. During LiDAR degeneracy, nearby retained structure contributes a
+small observability-support bonus. It does not feed the 10 Hz collision map, so
+malformed or delayed long-term-map traffic cannot alter the current
+flight-safety path.
+
+The added score is:
+
+`unseen bonus - submap coverage penalty - observed-root penalty + degenerate structural-support bonus`.
+
+`pvbsm_root_voxel_size_m` must equal FAST-LIVO2 `lio/voxel_size`;
+`robot_id` and `pvbsm_submap_edge_roots` must match FAST-LIVO2
+`daib_pvbsm/robot_id` and `daib_pvbsm/submap_edge_roots`.
 
 The odometry and cloud are generated from the same LIO update and must have
 matching timestamps and `header.frame_id`. The current FAST-LIVO2 configuration

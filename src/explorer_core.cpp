@@ -46,6 +46,11 @@ ExplorerCore::ExplorerCore(ExplorerConfig config) : config_(std::move(config))
   sanitizeConfig();
 }
 
+void ExplorerCore::setPvbsmBatchQuery(PvbsmBatchQuery query)
+{
+  pvbsm_batch_query_ = std::move(query);
+}
+
 void ExplorerCore::sanitizeConfig()
 {
   config_.robot_id = std::max(0, std::min(65535, config_.robot_id));
@@ -106,6 +111,20 @@ void ExplorerCore::sanitizeConfig()
             config_.goal_switch_margin, 1.0);
   config_.degenerate_safe_path_weight =
       std::max(0.0, config_.degenerate_safe_path_weight);
+  config_.pvbsm_root_voxel_size_m =
+      std::max(0.1, config_.pvbsm_root_voxel_size_m);
+  config_.pvbsm_submap_edge_roots =
+      std::max(1, std::min(255, config_.pvbsm_submap_edge_roots));
+  config_.pvbsm_covered_root_target =
+      std::max(1, config_.pvbsm_covered_root_target);
+  config_.pvbsm_unseen_submap_bonus =
+      std::max(0.0, config_.pvbsm_unseen_submap_bonus);
+  config_.pvbsm_submap_coverage_penalty =
+      std::max(0.0, config_.pvbsm_submap_coverage_penalty);
+  config_.pvbsm_observed_root_penalty =
+      std::max(0.0, config_.pvbsm_observed_root_penalty);
+  config_.pvbsm_degenerate_structure_bonus =
+      std::max(0.0, config_.pvbsm_degenerate_structure_bonus);
 }
 
 double ExplorerCore::distance(const Vec3 &a, const Vec3 &b)
@@ -365,6 +384,24 @@ double ExplorerCore::frontierScore(const VoxelKey &voxel,
          0.25 * distance(point, position);
 }
 
+double ExplorerCore::pvbsmScoreAdjustment(
+    const PvbsmExplorationHint &hint) const
+{
+  if (!config_.pvbsm_scoring_enabled) return 0.0;
+  double adjustment = 0.0;
+  if (!hint.submap_observed)
+    adjustment += config_.pvbsm_unseen_submap_bonus;
+  else
+    adjustment -= config_.pvbsm_submap_coverage_penalty *
+                  clamp(hint.submap_coverage, 0.0, 1.0);
+  if (hint.root_observed)
+    adjustment -= config_.pvbsm_observed_root_penalty;
+  if (degenerate_)
+    adjustment += config_.pvbsm_degenerate_structure_bonus *
+                  clamp(hint.structural_support, 0.0, 1.0);
+  return adjustment;
+}
+
 void ExplorerCore::updateSubmap(const Vec3 &position,
                                 const Quaternion &orientation,
                                 const std::vector<Vec3> &points)
@@ -473,9 +510,14 @@ void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
   const double max_distance =
       degenerate_ ? config_.degenerate_max_goal_distance_m
                   : config_.max_goal_distance_m;
-  double best_score = -std::numeric_limits<double>::infinity();
-  Vec3 best;
-  bool found = false;
+  struct Candidate
+  {
+    VoxelKey voxel;
+    Vec3 point;
+    double known_free = 0.0;
+  };
+  std::vector<Candidate> candidates;
+  candidates.reserve(static_cast<std::size_t>(budget));
   int evaluated = 0;
   for (const VoxelKey &voxel : frontiers_)
   {
@@ -490,14 +532,65 @@ void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
       continue;
     double known_free = 0.0;
     if (segmentBlocked(position, candidate, &known_free)) continue;
+    candidates.push_back({voxel, candidate, known_free});
+  }
+
+  std::vector<PvbsmExplorationHint> pvbsm_hints;
+  std::size_t current_goal_hint_index =
+      std::numeric_limits<std::size_t>::max();
+  if (config_.pvbsm_scoring_enabled && pvbsm_batch_query_ &&
+      !candidates.empty())
+  {
+    std::vector<PvbsmQueryPoint> query_points;
+    query_points.reserve(candidates.size() + (had_goal ? 1U : 0U));
+    for (const Candidate &candidate : candidates)
+      query_points.push_back(
+          {candidate.point.x, candidate.point.y, candidate.point.z});
+    if (had_goal)
+    {
+      current_goal_hint_index = query_points.size();
+      query_points.push_back(
+          {decision_.position.x,
+           decision_.position.y,
+           decision_.position.z});
+    }
+    pvbsm_hints = pvbsm_batch_query_(query_points);
+    if (pvbsm_hints.size() != query_points.size())
+    {
+      pvbsm_hints.clear();
+      current_goal_hint_index = std::numeric_limits<std::size_t>::max();
+    }
+  }
+
+  stats_.pvbsm_scored_candidates =
+      pvbsm_hints.empty() ? 0U : candidates.size();
+  stats_.pvbsm_unseen_candidates = 0;
+  stats_.pvbsm_best_adjustment = 0.0;
+  double best_score = -std::numeric_limits<double>::infinity();
+  Vec3 best;
+  bool found = false;
+  for (std::size_t index = 0; index < candidates.size(); ++index)
+  {
+    const Candidate &candidate = candidates[index];
+    double pvbsm_adjustment = 0.0;
+    if (!pvbsm_hints.empty())
+    {
+      pvbsm_adjustment = pvbsmScoreAdjustment(pvbsm_hints[index]);
+      if (!pvbsm_hints[index].submap_observed)
+        ++stats_.pvbsm_unseen_candidates;
+    }
     const double score =
-        frontierScore(voxel, position) +
-        (degenerate_ ? config_.degenerate_safe_path_weight * known_free : 0.0);
+        frontierScore(candidate.voxel, position) +
+        (degenerate_
+             ? config_.degenerate_safe_path_weight * candidate.known_free
+             : 0.0) +
+        pvbsm_adjustment;
     if (score > best_score)
     {
       best_score = score;
-      best = candidate;
+      best = candidate.point;
       found = true;
+      stats_.pvbsm_best_adjustment = pvbsm_adjustment;
     }
   }
   const auto elapsed = std::chrono::duration<double, std::milli>(
@@ -546,6 +639,10 @@ void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
                       position) +
         (degenerate_
              ? config_.degenerate_safe_path_weight * current_known_free
+             : 0.0) +
+        (current_goal_hint_index < pvbsm_hints.size()
+             ? pvbsmScoreAdjustment(
+                   pvbsm_hints[current_goal_hint_index])
              : 0.0);
     const double margin =
         degenerate_ ? config_.degenerate_goal_switch_margin

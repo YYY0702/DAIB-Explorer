@@ -1,5 +1,8 @@
 #pragma once
 
+#include "daib_explorer/pvbsm_types.h"
+
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -47,6 +50,12 @@ public:
   explicit PvbsmMemory(std::size_t max_records = 200000);
 
   void applyDelta(const std::vector<PvbsmRecord> &records);
+  std::vector<PvbsmExplorationHint> queryExplorationHints(
+      const std::vector<PvbsmQueryPoint> &points,
+      uint16_t source_id,
+      double root_voxel_size_m,
+      uint8_t submap_edge_roots,
+      std::size_t covered_root_target) const;
   const PvbsmMemoryStats &stats() const { return stats_; }
 
 private:
@@ -70,16 +79,47 @@ private:
     uint32_t revision = 0;
   };
 
+  struct SubmapKey
+  {
+    uint16_t source_id = 0;
+    int64_t x = 0;
+    int64_t y = 0;
+    int64_t z = 0;
+    bool operator==(const SubmapKey &other) const;
+  };
+
+  struct SubmapKeyHash
+  {
+    std::size_t operator()(const SubmapKey &key) const;
+  };
+
+  struct SubmapEvidence
+  {
+    std::size_t root_count = 0;
+    std::size_t plane_count = 0;
+    std::size_t residual_count = 0;
+    double plane_confidence_sum = 0.0;
+  };
+
   std::size_t max_records_;
   std::unordered_map<RootKey, std::vector<PvbsmRecord>, RootKeyHash> roots_;
   std::unordered_map<RootKey, uint32_t, RootKeyHash> revisions_;
+  std::unordered_map<SubmapKey, SubmapEvidence, SubmapKeyHash>
+      submap_evidence_;
   std::deque<RootVersion> age_queue_;
   PvbsmMemoryStats stats_;
+  std::size_t record_count_ = 0;
+  std::size_t plane_count_ = 0;
+  std::size_t residual_count_ = 0;
 
   void eraseRoot(const RootKey &key);
   void clearSource(uint16_t source_id);
   void enforceCapacity();
+  void compactAgeQueue();
   void refreshStats();
+  SubmapKey submapKey(const PvbsmRecord &record) const;
+  void addRootEvidence(const std::vector<PvbsmRecord> &records);
+  void removeRootEvidence(const std::vector<PvbsmRecord> &records);
 };
 
 } // namespace daib_explorer

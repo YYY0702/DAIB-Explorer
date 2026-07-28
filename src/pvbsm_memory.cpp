@@ -1,7 +1,7 @@
 #include "daib_explorer/pvbsm_memory.h"
 
 #include <algorithm>
-#include <tuple>
+#include <cmath>
 #include <unordered_set>
 
 namespace daib_explorer
@@ -23,31 +23,6 @@ int64_t FloorDivide(int32_t value, uint8_t divisor)
   return quotient;
 }
 
-struct SubmapKey
-{
-  uint16_t source_id = 0;
-  int64_t x = 0;
-  int64_t y = 0;
-  int64_t z = 0;
-  bool operator==(const SubmapKey &other) const
-  {
-    return source_id == other.source_id &&
-           x == other.x && y == other.y && z == other.z;
-  }
-};
-
-struct SubmapKeyHash
-{
-  std::size_t operator()(const SubmapKey &key) const
-  {
-    std::size_t seed = 0;
-    HashCombine(seed, key.source_id);
-    HashCombine(seed, key.x);
-    HashCombine(seed, key.y);
-    HashCombine(seed, key.z);
-    return seed;
-  }
-};
 } // namespace
 
 PvbsmMemory::PvbsmMemory(std::size_t max_records)
@@ -71,27 +46,112 @@ std::size_t PvbsmMemory::RootKeyHash::operator()(const RootKey &key) const
   return seed;
 }
 
+bool PvbsmMemory::SubmapKey::operator==(const SubmapKey &other) const
+{
+  return source_id == other.source_id &&
+         x == other.x && y == other.y && z == other.z;
+}
+
+std::size_t PvbsmMemory::SubmapKeyHash::operator()(
+    const SubmapKey &key) const
+{
+  std::size_t seed = 0;
+  HashCombine(seed, key.source_id);
+  HashCombine(seed, key.x);
+  HashCombine(seed, key.y);
+  HashCombine(seed, key.z);
+  return seed;
+}
+
+PvbsmMemory::SubmapKey PvbsmMemory::submapKey(
+    const PvbsmRecord &record) const
+{
+  return {
+      record.source_id,
+      FloorDivide(record.root[0], record.submap_edge_roots),
+      FloorDivide(record.root[1], record.submap_edge_roots),
+      FloorDivide(record.root[2], record.submap_edge_roots)};
+}
+
+void PvbsmMemory::addRootEvidence(
+    const std::vector<PvbsmRecord> &records)
+{
+  if (records.empty()) return;
+  SubmapEvidence &submap = submap_evidence_[submapKey(records.front())];
+  ++submap.root_count;
+  for (const PvbsmRecord &record : records)
+  {
+    ++record_count_;
+    if (record.kind == 0)
+    {
+      ++plane_count_;
+      ++submap.plane_count;
+      submap.plane_confidence_sum +=
+          std::max(0.0F, std::min(1.0F, record.confidence));
+    }
+    else if (record.kind == 1)
+    {
+      ++residual_count_;
+      ++submap.residual_count;
+    }
+  }
+}
+
+void PvbsmMemory::removeRootEvidence(
+    const std::vector<PvbsmRecord> &records)
+{
+  if (records.empty()) return;
+  const SubmapKey key = submapKey(records.front());
+  auto submap = submap_evidence_.find(key);
+  for (const PvbsmRecord &record : records)
+  {
+    if (record_count_ > 0) --record_count_;
+    if (record.kind == 0)
+    {
+      if (plane_count_ > 0) --plane_count_;
+      if (submap != submap_evidence_.end())
+      {
+        if (submap->second.plane_count > 0)
+          --submap->second.plane_count;
+        submap->second.plane_confidence_sum = std::max(
+            0.0,
+            submap->second.plane_confidence_sum -
+                std::max(0.0F, std::min(1.0F, record.confidence)));
+      }
+    }
+    else if (record.kind == 1)
+    {
+      if (residual_count_ > 0) --residual_count_;
+      if (submap != submap_evidence_.end() &&
+          submap->second.residual_count > 0)
+        --submap->second.residual_count;
+    }
+  }
+  if (submap == submap_evidence_.end()) return;
+  if (submap->second.root_count > 0) --submap->second.root_count;
+  if (submap->second.root_count == 0)
+    submap_evidence_.erase(submap);
+}
+
 void PvbsmMemory::eraseRoot(const RootKey &key)
 {
   const auto root = roots_.find(key);
   if (root == roots_.end()) return;
+  removeRootEvidence(root->second);
   roots_.erase(root);
 }
 
 void PvbsmMemory::clearSource(uint16_t source_id)
 {
   bool had_state = false;
-  for (auto root = roots_.begin(); root != roots_.end();)
+  std::vector<RootKey> roots_to_remove;
+  for (const auto &root : roots_)
+    if (root.first.source_id == source_id)
+      roots_to_remove.push_back(root.first);
+  for (const RootKey &root : roots_to_remove)
   {
-    if (root->first.source_id == source_id)
-    {
-      had_state = true;
-      root = roots_.erase(root);
-    }
-    else
-    {
-      ++root;
-    }
+    had_state = true;
+    eraseRoot(root);
   }
   for (auto revision = revisions_.begin(); revision != revisions_.end();)
   {
@@ -172,19 +232,20 @@ void PvbsmMemory::applyDelta(const std::vector<PvbsmRecord> &records)
     if (root_records.empty()) continue;
     if (root_records.size() > max_records_)
       root_records.resize(max_records_);
+    eraseRoot(key);
     roots_[key] = std::move(root_records);
+    addRootEvidence(roots_[key]);
     ++stats_.accepted_root_updates;
   }
 
   enforceCapacity();
+  compactAgeQueue();
   refreshStats();
 }
 
 void PvbsmMemory::enforceCapacity()
 {
-  std::size_t record_count = 0;
-  for (const auto &entry : roots_) record_count += entry.second.size();
-  while (record_count > max_records_ && !age_queue_.empty())
+  while (record_count_ > max_records_ && !age_queue_.empty())
   {
     const RootVersion oldest = age_queue_.front();
     age_queue_.pop_front();
@@ -194,37 +255,84 @@ void PvbsmMemory::enforceCapacity()
       continue;
     const auto root = roots_.find(oldest.key);
     if (root == roots_.end()) continue;
-    record_count -= root->second.size();
-    roots_.erase(root);
+    eraseRoot(oldest.key);
     revisions_.erase(oldest.key);
     ++stats_.capacity_evictions;
   }
 }
 
+void PvbsmMemory::compactAgeQueue()
+{
+  const std::size_t threshold = roots_.size() * 4U + 1024U;
+  if (age_queue_.size() <= threshold) return;
+  std::vector<RootVersion> current;
+  current.reserve(roots_.size());
+  for (const auto &root : roots_)
+  {
+    const auto revision = revisions_.find(root.first);
+    if (revision != revisions_.end())
+      current.push_back({root.first, revision->second});
+  }
+  std::sort(
+      current.begin(), current.end(),
+      [](const RootVersion &left, const RootVersion &right)
+      {
+        return left.revision < right.revision;
+      });
+  age_queue_.assign(current.begin(), current.end());
+}
+
 void PvbsmMemory::refreshStats()
 {
   stats_.root_count = roots_.size();
-  stats_.record_count = 0;
-  stats_.plane_count = 0;
-  stats_.residual_count = 0;
-  std::unordered_set<SubmapKey, SubmapKeyHash> submaps;
-  for (const auto &entry : roots_)
+  stats_.record_count = record_count_;
+  stats_.plane_count = plane_count_;
+  stats_.residual_count = residual_count_;
+  stats_.submap_count = submap_evidence_.size();
+}
+
+std::vector<PvbsmExplorationHint> PvbsmMemory::queryExplorationHints(
+    const std::vector<PvbsmQueryPoint> &points,
+    uint16_t source_id,
+    double root_voxel_size_m,
+    uint8_t submap_edge_roots,
+    std::size_t covered_root_target) const
+{
+  const double voxel_size = std::max(0.01, root_voxel_size_m);
+  const uint8_t edge = std::max<uint8_t>(1, submap_edge_roots);
+  const double coverage_target =
+      static_cast<double>(std::max<std::size_t>(1, covered_root_target));
+  std::vector<PvbsmExplorationHint> hints;
+  hints.reserve(points.size());
+  for (const PvbsmQueryPoint &point : points)
   {
-    stats_.record_count += entry.second.size();
-    if (entry.second.empty()) continue;
-    const PvbsmRecord &first = entry.second.front();
-    submaps.insert({
-        first.source_id,
-        FloorDivide(first.root[0], first.submap_edge_roots),
-        FloorDivide(first.root[1], first.submap_edge_roots),
-        FloorDivide(first.root[2], first.submap_edge_roots)});
-    for (const PvbsmRecord &record : entry.second)
+    const RootKey root{
+        source_id,
+        static_cast<int32_t>(std::floor(point.x / voxel_size)),
+        static_cast<int32_t>(std::floor(point.y / voxel_size)),
+        static_cast<int32_t>(std::floor(point.z / voxel_size))};
+    PvbsmExplorationHint hint;
+    hint.root_observed = roots_.find(root) != roots_.end();
+    const SubmapKey submap{
+        source_id,
+        FloorDivide(root.x, edge),
+        FloorDivide(root.y, edge),
+        FloorDivide(root.z, edge)};
+    const auto evidence = submap_evidence_.find(submap);
+    if (evidence != submap_evidence_.end())
     {
-      if (record.kind == 0) ++stats_.plane_count;
-      if (record.kind == 1) ++stats_.residual_count;
+      hint.submap_observed = true;
+      hint.submap_coverage =
+          std::min(1.0, evidence->second.root_count / coverage_target);
+      const double structural_evidence =
+          evidence->second.plane_confidence_sum +
+          0.5 * evidence->second.residual_count;
+      hint.structural_support =
+          std::min(1.0, structural_evidence / coverage_target);
     }
+    hints.push_back(hint);
   }
-  stats_.submap_count = submaps.size();
+  return hints;
 }
 
 } // namespace daib_explorer

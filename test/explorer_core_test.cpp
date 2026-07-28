@@ -270,6 +270,91 @@ TEST(PvbsmMemory, AcceptsRevisionResetFromNewSenderSession)
   EXPECT_EQ(memory.stats().residual_count, 1U);
 }
 
+TEST(PvbsmMemory, QueriesRootCoverageAndUnseenSubmaps)
+{
+  PvbsmMemory memory(10);
+  PvbsmRecord observed;
+  observed.source_id = 5;
+  observed.root[0] = 0;
+  observed.revision = 1;
+  observed.kind = 0;
+  observed.confidence = 1.0F;
+  observed.submap_edge_roots = 8;
+  memory.applyDelta({observed});
+
+  const std::vector<PvbsmExplorationHint> hints =
+      memory.queryExplorationHints(
+          {{0.2, 0.2, 0.2}, {8.2, 0.2, 0.2}},
+          5, 1.0, 8, 1);
+  ASSERT_EQ(hints.size(), 2U);
+  EXPECT_TRUE(hints[0].root_observed);
+  EXPECT_TRUE(hints[0].submap_observed);
+  EXPECT_DOUBLE_EQ(hints[0].submap_coverage, 1.0);
+  EXPECT_DOUBLE_EQ(hints[0].structural_support, 1.0);
+  EXPECT_FALSE(hints[1].root_observed);
+  EXPECT_FALSE(hints[1].submap_observed);
+}
+
+TEST(PvbsmMemory, ReplacesIncrementalSubmapEvidence)
+{
+  PvbsmMemory memory(10);
+  PvbsmRecord plane;
+  plane.revision = 1;
+  plane.kind = 0;
+  plane.confidence = 0.8F;
+  memory.applyDelta({plane});
+  ASSERT_EQ(memory.stats().plane_count, 1U);
+
+  PvbsmRecord residual = plane;
+  residual.revision = 2;
+  residual.kind = 1;
+  memory.applyDelta({residual});
+  EXPECT_EQ(memory.stats().root_count, 1U);
+  EXPECT_EQ(memory.stats().record_count, 1U);
+  EXPECT_EQ(memory.stats().plane_count, 0U);
+  EXPECT_EQ(memory.stats().residual_count, 1U);
+  EXPECT_EQ(memory.stats().submap_count, 1U);
+}
+
+TEST(ExplorerCore, PrefersPvbsmUnseenFrontier)
+{
+  ExplorerConfig config;
+  config.min_goal_distance_m = 1.0;
+  config.max_goal_distance_m = 10.0;
+  config.pvbsm_unseen_submap_bonus = 10.0;
+  config.pvbsm_submap_coverage_penalty = 10.0;
+  ExplorerCore explorer(config);
+  explorer.setHealth(false, 0.2, 10.0);
+  explorer.setPvbsmBatchQuery(
+      [](const std::vector<PvbsmQueryPoint> &points)
+      {
+        std::vector<PvbsmExplorationHint> hints;
+        hints.reserve(points.size());
+        for (const PvbsmQueryPoint &point : points)
+        {
+          PvbsmExplorationHint hint;
+          if (point.x >= 0.0)
+          {
+            hint.submap_observed = true;
+            hint.submap_coverage = 1.0;
+          }
+          hints.push_back(hint);
+        }
+        return hints;
+      });
+
+  explorer.update(
+      {0.0, 0.0, 0.0}, {},
+      {{8.0, 0.0, 0.0}, {-8.0, 0.0, 0.0}}, 1.0);
+  GoalDecision decision;
+  ASSERT_TRUE(explorer.consumeDecision(decision));
+  ASSERT_TRUE(decision.valid);
+  EXPECT_LT(decision.position.x, 0.0);
+  EXPECT_GT(explorer.stats().pvbsm_scored_candidates, 0U);
+  EXPECT_GT(explorer.stats().pvbsm_unseen_candidates, 0U);
+  EXPECT_GT(explorer.stats().pvbsm_best_adjustment, 0.0);
+}
+
 }  // namespace daib_explorer
 
 int main(int argc, char **argv)

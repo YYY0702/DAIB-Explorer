@@ -39,6 +39,30 @@ public:
     if (pvbsm_memory_enabled_)
       pvbsm_memory_ = std::make_unique<PvbsmMemory>(
           static_cast<std::size_t>(pvbsm_memory_max_records_));
+    if (pvbsm_memory_)
+    {
+      pvbsm_query_source_id_ = static_cast<uint16_t>(
+          std::max(0, std::min(65535, config.robot_id)));
+      const double root_voxel_size =
+          std::max(0.1, config.pvbsm_root_voxel_size_m);
+      pvbsm_expected_submap_edge_roots_ = static_cast<uint8_t>(
+          std::max(1, std::min(255, config.pvbsm_submap_edge_roots)));
+      const std::size_t covered_root_target = static_cast<std::size_t>(
+          std::max(1, config.pvbsm_covered_root_target));
+      core_->setPvbsmBatchQuery(
+          [this, root_voxel_size,
+           covered_root_target](
+              const std::vector<PvbsmQueryPoint> &points)
+          {
+            std::lock_guard<std::mutex> lock(pvbsm_mutex_);
+            return pvbsm_memory_->queryExplorationHints(
+                points,
+                pvbsm_query_source_id_,
+                root_voxel_size,
+                pvbsm_expected_submap_edge_roots_,
+                covered_root_target);
+          });
+    }
 
     odom_sub_ = nh_.subscribe(odom_topic_, 5, &ExplorerNode::odomCallback, this);
     cloud_sub_ =
@@ -136,6 +160,8 @@ private:
   bool pvbsm_memory_enabled_ = true;
   int pvbsm_memory_max_records_ = 200000;
   int max_pvbsm_records_per_delta_ = 2048;
+  uint16_t pvbsm_query_source_id_ = 0;
+  uint8_t pvbsm_expected_submap_edge_roots_ = 8;
   bool ready_ = false;
   bool ready_initialized_ = false;
 
@@ -303,6 +329,30 @@ private:
     private_nh_.param("degenerate_safe_path_weight",
                       config.degenerate_safe_path_weight,
                       config.degenerate_safe_path_weight);
+    private_nh_.param("pvbsm_scoring_enabled",
+                      config.pvbsm_scoring_enabled,
+                      config.pvbsm_scoring_enabled);
+    private_nh_.param("pvbsm_root_voxel_size_m",
+                      config.pvbsm_root_voxel_size_m,
+                      config.pvbsm_root_voxel_size_m);
+    private_nh_.param("pvbsm_submap_edge_roots",
+                      config.pvbsm_submap_edge_roots,
+                      config.pvbsm_submap_edge_roots);
+    private_nh_.param("pvbsm_covered_root_target",
+                      config.pvbsm_covered_root_target,
+                      config.pvbsm_covered_root_target);
+    private_nh_.param("pvbsm_unseen_submap_bonus",
+                      config.pvbsm_unseen_submap_bonus,
+                      config.pvbsm_unseen_submap_bonus);
+    private_nh_.param("pvbsm_submap_coverage_penalty",
+                      config.pvbsm_submap_coverage_penalty,
+                      config.pvbsm_submap_coverage_penalty);
+    private_nh_.param("pvbsm_observed_root_penalty",
+                      config.pvbsm_observed_root_penalty,
+                      config.pvbsm_observed_root_penalty);
+    private_nh_.param("pvbsm_degenerate_structure_bonus",
+                      config.pvbsm_degenerate_structure_bonus,
+                      config.pvbsm_degenerate_structure_bonus);
   }
 
   void odomCallback(const nav_msgs::OdometryConstPtr &message)
@@ -423,6 +473,32 @@ private:
       ROS_ERROR_THROTTLE(
           2.0, "[ DAIB Explorer ] invalid PVBSM schema: %s", error.what());
       return;
+    }
+
+    bool contains_query_source = false;
+    bool submap_edge_mismatch = false;
+    for (const PvbsmRecord &record : records)
+    {
+      if (record.source_id != pvbsm_query_source_id_) continue;
+      contains_query_source = true;
+      submap_edge_mismatch =
+          submap_edge_mismatch ||
+          record.submap_edge_roots !=
+              pvbsm_expected_submap_edge_roots_;
+    }
+    if (!records.empty() && !contains_query_source)
+    {
+      ROS_WARN_THROTTLE(
+          5.0,
+          "[ DAIB Explorer PVBSM ] no records match Explorer robot_id; "
+          "long-term revisit scoring will have no local evidence");
+    }
+    if (submap_edge_mismatch)
+    {
+      ROS_ERROR_THROTTLE(
+          5.0,
+          "[ DAIB Explorer PVBSM ] submap_edge_roots mismatch between "
+          "FAST-LIVO2 and Explorer");
     }
 
     std::lock_guard<std::mutex> lock(pvbsm_mutex_);
@@ -665,7 +741,11 @@ private:
         << stats.long_term_update_cycles << " memory"
         << ", budgets=" << stats.effective_raycasts << " rays/"
         << stats.effective_frontier_updates << " frontier/"
-        << stats.effective_frontier_evaluations << " candidates");
+        << stats.effective_frontier_evaluations << " candidates"
+        << ", pvbsm=" << stats.pvbsm_scored_candidates << " scored/"
+        << stats.pvbsm_unseen_candidates << " unseen"
+        << ", pvbsm_best_adjustment="
+        << stats.pvbsm_best_adjustment);
   }
 };
 

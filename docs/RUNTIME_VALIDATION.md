@@ -52,6 +52,10 @@ Acceptance criteria:
   `goal_blocked_confirm_updates`;
 - a timed-out identical goal refreshes internally without increasing
   generation.
+- the status log reports non-zero `pvbsm=... scored`; candidates in unseen
+  submaps contribute a positive `pvbsm_best_adjustment`;
+- replaying a previously mapped region reduces or makes the PVBSM adjustment
+  negative instead of repeatedly rewarding the same frontier.
 
 ## 3. Compute isolation
 

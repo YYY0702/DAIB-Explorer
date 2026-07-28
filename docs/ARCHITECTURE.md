@@ -38,6 +38,12 @@ candidate evaluation at 1 Hz, and long-term coverage/submap maintenance at
 1 Hz. These stages share one serialized core rather than independent worker
 threads, so rate separation does not introduce map races.
 
+PVBSM affects only the 1 Hz candidate score. Candidate positions are queried
+as one batch under one short memory lock. The score continuously penalizes
+well-covered submaps and exact represented roots, rewards unseen submaps, and
+adds a bounded structural-support term during degeneracy. The rolling
+occupancy map remains the sole collision authority.
+
 ## Three map layers
 
 1. **Rolling occupancy map**: bounded by `planning_map_radius_m`, updated at
