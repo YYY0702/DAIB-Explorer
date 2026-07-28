@@ -24,7 +24,7 @@ TEST(ExplorerCore, BuildsFrontiersAndSelectsGoal)
   EXPECT_GT(explorer.stats().free_cells, 0U);
   EXPECT_GT(explorer.stats().occupied_cells, 0U);
   EXPECT_GT(explorer.stats().frontier_cells, 0U);
-  EXPECT_GT(explorer.stats().observed_cells, 0U);
+  EXPECT_GT(explorer.stats().visited_cells, 0U);
   GoalDecision decision;
   ASSERT_TRUE(explorer.consumeDecision(decision));
   EXPECT_TRUE(decision.valid);
@@ -59,26 +59,24 @@ TEST(ExplorerCore, EntersBusyBudgetAtValidatedBoardRuntime)
                 config.busy_budget_scale)));
 }
 
-TEST(ExplorerCore, PreservesObservedCoverageAndFullRotationSubmaps)
+TEST(ExplorerCore, MaintainsOnlyLightweightVisitMemory)
 {
   ExplorerConfig config;
-  config.submap_translation_threshold_m = 1000.0;
-  config.submap_rotation_threshold_deg = 45.0;
+  config.coverage_voxel_size_m = 2.0;
   ExplorerCore explorer(config);
   const std::vector<Vec3> points{{4.0, 0.0, 0.0}, {0.0, 4.0, 1.0}};
 
   explorer.update({0.0, 0.0, 0.0}, {}, points, 1.0);
-  EXPECT_GT(explorer.stats().observed_cells, 0U);
-  EXPECT_EQ(explorer.submaps().size(), 1U);
-  EXPECT_GT(explorer.submaps().front().covered_cells, 1U);
+  EXPECT_EQ(explorer.stats().visited_cells, 1U);
+  EXPECT_EQ(explorer.stats().observed_cells, 0U);
+  EXPECT_EQ(explorer.stats().submap_count, 0U);
 
-  // Sixty degrees around the X axis must create a submap even with unchanged
-  // yaw and position. This protects the old full-3D rotation behavior.
-  const double half_angle = 30.0 * 3.14159265358979323846 / 180.0;
-  const Quaternion rolled{std::sin(half_angle), 0.0, 0.0,
-                          std::cos(half_angle)};
-  explorer.update({0.0, 0.0, 0.0}, rolled, points, 2.0);
-  EXPECT_EQ(explorer.submaps().size(), 2U);
+  // Moving into another coverage voxel adds one compact visit entry. Point
+  // geometry and vehicle rotation no longer create a second long-term map.
+  explorer.update({3.0, 0.0, 0.0}, {0.5, 0.0, 0.0, 0.866}, points, 2.0);
+  EXPECT_EQ(explorer.stats().visited_cells, 2U);
+  EXPECT_EQ(explorer.stats().observed_cells, 0U);
+  EXPECT_EQ(explorer.stats().submap_count, 0U);
 }
 
 TEST(ExplorerCore, HoldsGoalAndSuppressesSameTimedOutGoal)

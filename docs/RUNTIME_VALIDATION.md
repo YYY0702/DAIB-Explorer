@@ -42,7 +42,9 @@ rostopic echo /daib_explorer/goal
 
 Acceptance criteria:
 
-- free, occupied, frontier, visited and observed counters grow in the log;
+- free, occupied, frontier and visited counters grow in the log; the
+  compatibility `observed` and `submaps` values grow after PVBSM deltas arrive,
+  and the same line reports `memory_source=pvbsm`;
 - the `cycles` log ratio approaches `10 map : 10 blocked-check : 2 frontier :
   1 goal : 1 memory` per second;
 - a valid goal has frame `camera_init` and lies near a frontier;
@@ -86,7 +88,6 @@ or configuration problem, not an intended data-flow dependency.
 ## Known boundary
 
 The rolling occupancy map is reconstructible and is intentionally lost if the
-explorer process restarts. Coarse visited/observed memory, submap summaries and
-PVBSM geometry currently live in RAM. Persistent storage and the radio
-transport/fusion layer are later extensions. None of these affect SLAM
-localization state.
+explorer process restarts. Coarse trajectory visits and PVBSM geometry
+currently live in RAM. Persistent storage and the radio transport/fusion layer
+are later extensions. None of these affect SLAM localization state.

@@ -99,7 +99,8 @@ public:
                     << odom_topic_ << ", cloud=" << cloud_topic_
                     << ", map_update_rate=" << map_update_rate_hz_ << " Hz"
                     << ", pvbsm_memory="
-                    << (pvbsm_memory_ ? "enabled" : "disabled"));
+                    << (pvbsm_memory_ ? "enabled" : "disabled")
+                    << ", legacy_submap_memory=disabled");
   }
 
 private:
@@ -264,15 +265,6 @@ private:
     private_nh_.param("coverage_voxel_size_m",
                       config.coverage_voxel_size_m,
                       config.coverage_voxel_size_m);
-    private_nh_.param("max_coverage_points_per_update",
-                      config.max_coverage_points_per_update,
-                      config.max_coverage_points_per_update);
-    private_nh_.param("submap_translation_threshold_m",
-                      config.submap_translation_threshold_m,
-                      config.submap_translation_threshold_m);
-    private_nh_.param("submap_rotation_threshold_deg",
-                      config.submap_rotation_threshold_deg,
-                      config.submap_rotation_threshold_deg);
     private_nh_.param("replan_interval_s",
                       config.replan_interval_s,
                       config.replan_interval_s);
@@ -724,12 +716,23 @@ private:
     }
 
     const ExplorerStats &stats = core_->stats();
+    std::size_t pvbsm_root_count = 0;
+    std::size_t pvbsm_submap_count = 0;
+    if (pvbsm_memory_)
+    {
+      std::lock_guard<std::mutex> lock(pvbsm_mutex_);
+      pvbsm_root_count = pvbsm_memory_->stats().root_count;
+      pvbsm_submap_count = pvbsm_memory_->stats().submap_count;
+    }
     ROS_INFO_STREAM_THROTTLE(
         1.0, "[ DAIB Explorer ] map=" << stats.free_cells << " free/"
         << stats.occupied_cells << " occupied/" << stats.frontier_cells
         << " frontier, visited=" << stats.visited_cells
-        << ", observed=" << stats.observed_cells
-        << ", submaps=" << stats.submap_count
+        // Compatibility aliases: existing log parsers can keep consuming
+        // observed/submaps, but both now come from the single PVBSM memory.
+        << ", observed=" << pvbsm_root_count
+        << ", submaps=" << pvbsm_submap_count
+        << ", memory_source=pvbsm"
         << ", lio_ema=" << stats.smoothed_lio_time_ms << " ms"
         << ", update=" << stats.last_update_ms << " ms"
         << ", plan=" << stats.last_plan_ms << " ms"

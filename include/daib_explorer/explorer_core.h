@@ -61,9 +61,6 @@ struct ExplorerConfig
   double long_term_update_rate_hz = 1.0;
 
   double coverage_voxel_size_m = 2.0;
-  int max_coverage_points_per_update = 256;
-  double submap_translation_threshold_m = 20.0;
-  double submap_rotation_threshold_deg = 45.0;
 
   double replan_interval_s = 1.0;
   double goal_min_hold_time_s = 3.0;
@@ -110,25 +107,14 @@ struct GoalDecision
   std::string reason = "not_initialized";
 };
 
-struct SubmapSummary
-{
-  uint64_t id = 0;
-  uint64_t version = 1;
-  uint64_t start_update = 0;
-  uint64_t end_update = 0;
-  Vec3 anchor;
-  Quaternion anchor_orientation;
-  Vec3 min_bound;
-  Vec3 max_bound;
-  std::size_t covered_cells = 0;
-};
-
 struct ExplorerStats
 {
   std::size_t free_cells = 0;
   std::size_t occupied_cells = 0;
   std::size_t frontier_cells = 0;
   std::size_t visited_cells = 0;
+  // Deprecated compatibility slots. ExplorerNode exposes the corresponding
+  // observed/submaps log values from PvbsmMemory instead of this core.
   std::size_t observed_cells = 0;
   std::size_t submap_count = 0;
   double smoothed_lio_time_ms = 0.0;
@@ -167,8 +153,6 @@ public:
                                    std::size_t limit) const;
 
   const ExplorerStats &stats() const { return stats_; }
-  const std::vector<SubmapSummary> &submaps() const { return submaps_; }
-
 private:
   struct Cell
   {
@@ -183,9 +167,6 @@ private:
   std::unordered_set<VoxelKey, VoxelKeyHash> dirty_frontiers_;
   std::unordered_set<VoxelKey, VoxelKeyHash> frontiers_;
   std::unordered_map<VoxelKey, uint32_t, VoxelKeyHash> visits_;
-  std::unordered_map<VoxelKey, uint32_t, VoxelKeyHash> observations_;
-  std::unordered_set<VoxelKey, VoxelKeyHash> active_submap_cells_;
-  std::vector<SubmapSummary> submaps_;
 
   GoalDecision decision_;
   uint64_t update_id_ = 0;
@@ -216,8 +197,7 @@ private:
                       double *known_free_ratio = nullptr) const;
   double frontierScore(const VoxelKey &key, const Vec3 &position) const;
   double pvbsmScoreAdjustment(const PvbsmExplorationHint &hint) const;
-  void updateSubmap(const Vec3 &position, const Quaternion &orientation,
-                    const std::vector<Vec3> &points);
+  void updateVisitMemory(const Vec3 &position);
   void updateGoalStatus(const Vec3 &position, double timestamp);
   void updateDecision(const Vec3 &position, double timestamp);
   bool isDue(double timestamp, double rate_hz, double &last_time);

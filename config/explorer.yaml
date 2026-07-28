@@ -65,12 +65,10 @@ frontier_update_rate_hz: 2.0
 goal_evaluation_rate_hz: 1.0
 long_term_update_rate_hz: 1.0
 
-# Low-frequency exploration memory. Summaries are internal in the single-UAV
-# phase and reserve stable robot/submap IDs for future multi-UAV exchange.
+# Low-frequency trajectory-visit memory used by frontier novelty scoring.
+# Structural coverage and submap ownership come only from PVBSM, avoiding a
+# second point-cloud-derived long-term map inside Explorer.
 coverage_voxel_size_m: 2.0
-max_coverage_points_per_update: 256
-submap_translation_threshold_m: 20.0
-submap_rotation_threshold_deg: 45.0
 
 replan_interval_s: 1.0
 goal_min_hold_time_s: 3.0

@@ -2,9 +2,9 @@
 
 Degeneracy-Aware Information-Budgeted Exploration for resource-constrained
 UAVs. This ROS1 package owns exploration occupancy, incremental frontiers,
-coverage memory, submap summaries and single-UAV goal selection. FAST-LIVO2
-remains responsible only for localization/mapping and publishes observations
-through standard ROS messages.
+coarse trajectory-visit memory, PVBSM structural memory and single-UAV goal
+selection. FAST-LIVO2 remains responsible only for localization/mapping and
+publishes observations through standard ROS messages.
 
 ## Why it is a separate process
 
@@ -14,8 +14,8 @@ through standard ROS messages.
   cloud, so exploration never accumulates stale frames.
 - EGO-Swarm can later consume `/daib_explorer/goal` and
   `/daib_explorer/planning_cloud` without depending on FAST-LIVO2 headers.
-- A future multi-UAV transport can exchange submap summaries without changing
-  the SLAM process.
+- A future multi-UAV transport can exchange PVBSM deltas without changing the
+  high-rate local planning path.
 
 The internal schedule is deliberately multi-rate:
 
@@ -24,7 +24,7 @@ The internal schedule is deliberately multi-rate:
 | Occupancy integration and current-goal blocking check | 10 Hz |
 | Incremental dirty-frontier processing/publication | 2 Hz |
 | Goal candidate evaluation/replanning | 1 Hz |
-| Coverage memory and submap maintenance | 1 Hz |
+| Coarse trajectory-visit memory | 1 Hz |
 
 Dirty cells accumulate in a deduplicated set between frontier cycles, so the
 lower frontier rate does not discard occupancy changes.
@@ -57,7 +57,7 @@ Outputs:
 The EGO planning cloud is a view of occupied cells within 12 m of the current
 vehicle position, capped at 6000 points by default. This limits ROS
 serialization and local-planner work without pruning the Explorer's rolling
-occupancy map, frontier set or long-term coverage memory.
+occupancy map or frontier set.
 
 DAIB-PVBSM runs on a separate low-rate subscriber callback. It stores
 versioned plane primitives and residual voxels by source/root identity, rejects

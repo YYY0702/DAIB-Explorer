@@ -17,7 +17,7 @@ FAST-LIVO2YYY (10 Hz target, localization critical)
 DAIB-Explorer (default 10 Hz, best effort)
   - rolling occupancy map
   - incremental frontier set
-  - coverage memory and submap summaries
+  - coarse trajectory-visit memory
   - bounded planar/residual-voxel long-term geometry cache
   - degeneracy-aware information-budgeted goal selection
         |
@@ -34,9 +34,11 @@ PX4
 
 Within DAIB-Explorer, only occupancy integration and current-goal blockage
 checks follow the 10 Hz input. Dirty-frontier processing runs at 2 Hz, goal
-candidate evaluation at 1 Hz, and long-term coverage/submap maintenance at
-1 Hz. These stages share one serialized core rather than independent worker
-threads, so rate separation does not introduce map races.
+candidate evaluation at 1 Hz, and trajectory-visit maintenance at 1 Hz. The
+remaining 1 Hz core task stores only visited trajectory cells;
+structural coverage and submap ownership come from PVBSM. These stages share
+one serialized core rather than independent worker threads, so rate separation
+does not introduce map races.
 
 PVBSM affects only the 1 Hz candidate score. Candidate positions are queried
 as one batch under one short memory lock. The score continuously penalizes
@@ -50,9 +52,10 @@ occupancy map remains the sole collision authority.
    `map_update_rate_hz`, and used for collision/frontier queries.
 2. **Active frontier set**: updated only around cells whose occupancy state
    changed. Per-update work is capped by `frontier_update_budget`.
-3. **Long-term exploration memory**: coarse visited and LiDAR-observed cells,
-   versioned submap summaries, and the bounded DAIB-PVBSM plane/residual cache.
-   It prevents repeated coverage and retains compact geometry without copying
+3. **Long-term exploration memory**: coarse visited trajectory cells plus the
+   bounded DAIB-PVBSM plane/residual cache. PVBSM is the only structural
+   submap representation; Explorer no longer builds a second point-cloud-
+   derived submap summary. This prevents repeated coverage without copying
    FAST-LIVO2's estimator octree or visual feature map.
 
 The first two layers can be discarded/rebuilt if the explorer restarts; SLAM

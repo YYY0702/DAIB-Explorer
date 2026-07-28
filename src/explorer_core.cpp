@@ -10,7 +10,6 @@ namespace daib_explorer
 {
 namespace
 {
-constexpr double kPi = 3.14159265358979323846;
 constexpr int kNeighbors[6][3] = {
     {1, 0, 0}, {-1, 0, 0}, {0, 1, 0},
     {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
@@ -72,12 +71,6 @@ void ExplorerCore::sanitizeConfig()
   config_.long_term_update_rate_hz =
       std::max(0.1, config_.long_term_update_rate_hz);
   config_.coverage_voxel_size_m = std::max(0.1, config_.coverage_voxel_size_m);
-  config_.max_coverage_points_per_update =
-      std::max(1, config_.max_coverage_points_per_update);
-  config_.submap_translation_threshold_m =
-      std::max(1.0, config_.submap_translation_threshold_m);
-  config_.submap_rotation_threshold_deg =
-      std::max(1.0, config_.submap_rotation_threshold_deg);
   config_.replan_interval_s = std::max(0.1, config_.replan_interval_s);
   config_.goal_timeout_s =
       std::max(config_.replan_interval_s, config_.goal_timeout_s);
@@ -402,90 +395,11 @@ double ExplorerCore::pvbsmScoreAdjustment(
   return adjustment;
 }
 
-void ExplorerCore::updateSubmap(const Vec3 &position,
-                                const Quaternion &orientation,
-                                const std::vector<Vec3> &points)
+void ExplorerCore::updateVisitMemory(const Vec3 &position)
 {
   const VoxelKey coverage_key = key(position, config_.coverage_voxel_size_m);
   ++visits_[coverage_key];
   stats_.visited_cells = visits_.size();
-
-  const double quaternion_norm =
-      std::sqrt(orientation.x * orientation.x +
-                orientation.y * orientation.y +
-                orientation.z * orientation.z +
-                orientation.w * orientation.w);
-  const Quaternion normalized =
-      quaternion_norm > 1e-12
-          ? Quaternion{orientation.x / quaternion_norm,
-                       orientation.y / quaternion_norm,
-                       orientation.z / quaternion_norm,
-                       orientation.w / quaternion_norm}
-          : Quaternion{};
-  bool create = submaps_.empty();
-  if (!create)
-  {
-    const SubmapSummary &active = submaps_.back();
-    const Quaternion &anchor = active.anchor_orientation;
-    const double dot = std::fabs(
-        normalized.x * anchor.x + normalized.y * anchor.y +
-        normalized.z * anchor.z + normalized.w * anchor.w);
-    const double rotation_delta =
-        2.0 * std::acos(clamp(dot, 0.0, 1.0)) * 180.0 / kPi;
-    create =
-        distance(position, active.anchor) >=
-            config_.submap_translation_threshold_m ||
-        rotation_delta >= config_.submap_rotation_threshold_deg;
-  }
-  if (create)
-  {
-    SubmapSummary summary;
-    summary.id = (static_cast<uint64_t>(config_.robot_id) << 48U) |
-                 static_cast<uint64_t>(submaps_.size() + 1);
-    summary.start_update = update_id_;
-    summary.end_update = update_id_;
-    summary.anchor = position;
-    summary.anchor_orientation = normalized;
-    summary.min_bound = position;
-    summary.max_bound = position;
-    submaps_.push_back(summary);
-    active_submap_cells_.clear();
-  }
-
-  SubmapSummary &active = submaps_.back();
-  active.end_update = update_id_;
-  active.min_bound.x = std::min(active.min_bound.x, position.x);
-  active.min_bound.y = std::min(active.min_bound.y, position.y);
-  active.min_bound.z = std::min(active.min_bound.z, position.z);
-  active.max_bound.x = std::max(active.max_bound.x, position.x);
-  active.max_bound.y = std::max(active.max_bound.y, position.y);
-  active.max_bound.z = std::max(active.max_bound.z, position.z);
-  bool coverage_changed = active_submap_cells_.insert(coverage_key).second;
-  if (!points.empty())
-  {
-    const std::size_t sample_budget =
-        static_cast<std::size_t>(config_.max_coverage_points_per_update);
-    const std::size_t stride = std::max<std::size_t>(
-        1, (points.size() + sample_budget - 1) / sample_budget);
-    std::size_t sampled = 0;
-    for (std::size_t index = 0;
-         index < points.size() && sampled < sample_budget;
-         index += stride, ++sampled)
-    {
-      const VoxelKey observed_key =
-          key(points[index], config_.coverage_voxel_size_m);
-      ++observations_[observed_key];
-      coverage_changed =
-          active_submap_cells_.insert(observed_key).second || coverage_changed;
-    }
-  }
-  stats_.observed_cells = observations_.size();
-  if (coverage_changed)
-  {
-    active.covered_cells = active_submap_cells_.size();
-    ++active.version;
-  }
-  stats_.submap_count = submaps_.size();
 }
 
 void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
@@ -713,6 +627,7 @@ void ExplorerCore::update(const Vec3 &position,
                           const Quaternion &orientation,
                           const std::vector<Vec3> &points, double timestamp)
 {
+  (void)orientation;  // Kept in the public API for ROS/interface compatibility.
   const auto start = std::chrono::steady_clock::now();
   ++update_id_;
   ++stats_.map_updates;
@@ -729,7 +644,7 @@ void ExplorerCore::update(const Vec3 &position,
   if (isDue(timestamp, config_.long_term_update_rate_hz,
             last_long_term_update_time_))
   {
-    updateSubmap(position, orientation, points);
+    updateVisitMemory(position);
     ++stats_.long_term_update_cycles;
   }
   if (isDue(timestamp, config_.goal_evaluation_rate_hz,
