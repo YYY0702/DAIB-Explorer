@@ -507,10 +507,12 @@ private:
         stats.rejected_stale_root_updates,
         stats.deleted_roots,
         stats.capacity_evictions,
-        stats.source_session_resets};
+        stats.source_session_resets,
+        stats.detailed_root_count};
     pvbsm_stats_pub_.publish(stats_message);
     ROS_INFO_STREAM_THROTTLE(
         1.0, "[ DAIB Explorer PVBSM ] roots=" << stats.root_count
+                 << ", detailed_roots=" << stats.detailed_root_count
                  << ", records=" << stats.record_count
                  << ", submaps=" << stats.submap_count
                  << ", stale_rejected="

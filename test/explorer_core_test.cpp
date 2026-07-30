@@ -242,10 +242,44 @@ TEST(PvbsmMemory, EvictsOldestRootsAtRecordCapacity)
   PvbsmRecord second = first;
   second.root[0] = 1;
   second.revision = 2;
-  memory.applyDelta({first, second});
+  memory.applyDelta({first});
+  memory.applyDelta({second});
   EXPECT_EQ(memory.stats().record_count, 1U);
-  EXPECT_EQ(memory.stats().root_count, 1U);
+  EXPECT_EQ(memory.stats().root_count, 2U);
+  EXPECT_EQ(memory.stats().detailed_root_count, 1U);
   EXPECT_EQ(memory.stats().capacity_evictions, 1U);
+
+  const std::vector<PvbsmExplorationHint> hints =
+      memory.queryExplorationHints(
+          {{0.2, 0.2, 0.2}, {1.2, 0.2, 0.2}},
+          0, 1.0, 8, 2);
+  ASSERT_EQ(hints.size(), 2U);
+  EXPECT_TRUE(hints[0].root_observed);
+  EXPECT_TRUE(hints[1].root_observed);
+}
+
+TEST(PvbsmMemory, HardDeletionClearsDemotedCoverage)
+{
+  PvbsmMemory memory(1);
+  PvbsmRecord first;
+  first.revision = 1;
+  first.kind = 0;
+  PvbsmRecord second = first;
+  second.root[0] = 1;
+  second.revision = 2;
+  memory.applyDelta({first});
+  memory.applyDelta({second});
+  ASSERT_EQ(memory.stats().root_count, 2U);
+
+  PvbsmRecord deletion = first;
+  deletion.revision = 3;
+  deletion.kind = 2;
+  memory.applyDelta({deletion});
+  EXPECT_EQ(memory.stats().root_count, 1U);
+  const std::vector<PvbsmExplorationHint> hint =
+      memory.queryExplorationHints({{0.2, 0.2, 0.2}}, 0, 1.0, 8, 1);
+  ASSERT_EQ(hint.size(), 1U);
+  EXPECT_FALSE(hint.front().root_observed);
 }
 
 TEST(PvbsmMemory, AcceptsRevisionResetFromNewSenderSession)

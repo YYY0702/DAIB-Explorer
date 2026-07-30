@@ -52,11 +52,21 @@ occupancy map remains the sole collision authority.
    `map_update_rate_hz`, and used for collision/frontier queries.
 2. **Active frontier set**: updated only around cells whose occupancy state
    changed. Per-update work is capped by `frontier_update_budget`.
-3. **Long-term exploration memory**: coarse visited trajectory cells plus the
-   bounded DAIB-PVBSM plane/residual cache. PVBSM is the only structural
-   submap representation; Explorer no longer builds a second point-cloud-
-   derived submap summary. This prevents repeated coverage without copying
-   FAST-LIVO2's estimator octree or visual feature map.
+3. **Long-term exploration memory**: coarse visited trajectory cells plus
+   DAIB-PVBSM. Its detailed plane/residual cache is bounded, while a compact
+   per-submap observed-root bitmap survives detailed-record demotion. With the
+   default 8x8x8 block, the coverage bitmap is 512 bits (64 bytes) per
+   represented submap. PVBSM is the only structural submap representation;
+   Explorer no longer builds a second point-cloud-derived submap summary.
+   This prevents repeated coverage without copying FAST-LIVO2's estimator
+   octree or visual feature map.
+
+FAST-LIVO2 local-map retirement and PVBSM forgetting are deliberately
+separate. A root leaving the estimator window arrives as one archived
+plane/residual summary and remains observed. When the detailed-record capacity
+is reached, Explorer removes only detailed geometry and retains the observed
+bit and submap coverage count. Only a hard-deletion record, source-session
+reset, or mission reset clears long-term coverage.
 
 The first two layers can be discarded/rebuilt if the explorer restarts; SLAM
 localization is unaffected. Persisting and exchanging the third layer is the

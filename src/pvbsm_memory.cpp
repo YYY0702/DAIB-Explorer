@@ -23,6 +23,21 @@ int64_t FloorDivide(int32_t value, uint8_t divisor)
   return quotient;
 }
 
+uint8_t SafeSubmapEdge(uint8_t edge)
+{
+  // The protocol defaults to 8. Bound malformed/mismatched messages so one
+  // record cannot force an excessive bitmap allocation.
+  return std::max<uint8_t>(1, std::min<uint8_t>(16, edge));
+}
+
+int64_t FloorModulo(int32_t value, uint8_t divisor)
+{
+  const int64_t safe_divisor = std::max<int64_t>(1, divisor);
+  int64_t remainder = static_cast<int64_t>(value) % safe_divisor;
+  if (remainder < 0) remainder += safe_divisor;
+  return remainder;
+}
+
 } // namespace
 
 PvbsmMemory::PvbsmMemory(std::size_t max_records)
@@ -66,19 +81,88 @@ std::size_t PvbsmMemory::SubmapKeyHash::operator()(
 PvbsmMemory::SubmapKey PvbsmMemory::submapKey(
     const PvbsmRecord &record) const
 {
+  const uint8_t edge = SafeSubmapEdge(record.submap_edge_roots);
   return {
       record.source_id,
-      FloorDivide(record.root[0], record.submap_edge_roots),
-      FloorDivide(record.root[1], record.submap_edge_roots),
-      FloorDivide(record.root[2], record.submap_edge_roots)};
+      FloorDivide(record.root[0], edge),
+      FloorDivide(record.root[1], edge),
+      FloorDivide(record.root[2], edge)};
+}
+
+PvbsmMemory::SubmapKey PvbsmMemory::submapKey(
+    const RootKey &root, uint8_t submap_edge_roots) const
+{
+  const uint8_t edge = SafeSubmapEdge(submap_edge_roots);
+  return {
+      root.source_id,
+      FloorDivide(root.x, edge),
+      FloorDivide(root.y, edge),
+      FloorDivide(root.z, edge)};
+}
+
+std::size_t PvbsmMemory::submapRootIndex(
+    const RootKey &root, uint8_t submap_edge_roots) const
+{
+  const uint8_t edge = SafeSubmapEdge(submap_edge_roots);
+  const std::size_t x =
+      static_cast<std::size_t>(FloorModulo(root.x, edge));
+  const std::size_t y =
+      static_cast<std::size_t>(FloorModulo(root.y, edge));
+  const std::size_t z =
+      static_cast<std::size_t>(FloorModulo(root.z, edge));
+  return (x * edge + y) * edge + z;
+}
+
+bool PvbsmMemory::markRootObserved(const PvbsmRecord &record)
+{
+  const RootKey root{
+      record.source_id, record.root[0], record.root[1], record.root[2]};
+  const uint8_t edge = SafeSubmapEdge(record.submap_edge_roots);
+  SubmapEvidence &submap = submap_evidence_[submapKey(record)];
+  submap.edge_roots = edge;
+  const std::size_t bit_count =
+      static_cast<std::size_t>(edge) * edge * edge;
+  const std::size_t word_count = (bit_count + 63U) / 64U;
+  if (submap.observed_words.size() != word_count)
+    submap.observed_words.resize(word_count, 0U);
+  const std::size_t index = submapRootIndex(root, edge);
+  const std::size_t word = index / 64U;
+  const uint64_t mask = uint64_t{1} << (index % 64U);
+  if ((submap.observed_words[word] & mask) != 0U) return false;
+  submap.observed_words[word] |= mask;
+  ++submap.root_count;
+  ++observed_root_count_;
+  return true;
+}
+
+bool PvbsmMemory::clearRootObserved(
+    const RootKey &root, uint8_t submap_edge_roots)
+{
+  const uint8_t edge = SafeSubmapEdge(submap_edge_roots);
+  const SubmapKey key = submapKey(root, edge);
+  auto submap = submap_evidence_.find(key);
+  if (submap == submap_evidence_.end()) return false;
+  const std::size_t index = submapRootIndex(root, edge);
+  const std::size_t word = index / 64U;
+  if (word >= submap->second.observed_words.size()) return false;
+  const uint64_t mask = uint64_t{1} << (index % 64U);
+  if ((submap->second.observed_words[word] & mask) == 0U) return false;
+  submap->second.observed_words[word] &= ~mask;
+  if (submap->second.root_count > 0) --submap->second.root_count;
+  if (observed_root_count_ > 0) --observed_root_count_;
+  if (submap->second.root_count == 0 &&
+      submap->second.plane_count == 0 &&
+      submap->second.residual_count == 0)
+    submap_evidence_.erase(submap);
+  return true;
 }
 
 void PvbsmMemory::addRootEvidence(
     const std::vector<PvbsmRecord> &records)
 {
   if (records.empty()) return;
+  markRootObserved(records.front());
   SubmapEvidence &submap = submap_evidence_[submapKey(records.front())];
-  ++submap.root_count;
   for (const PvbsmRecord &record : records)
   {
     ++record_count_;
@@ -98,7 +182,8 @@ void PvbsmMemory::addRootEvidence(
 }
 
 void PvbsmMemory::removeRootEvidence(
-    const std::vector<PvbsmRecord> &records)
+    const std::vector<PvbsmRecord> &records,
+    bool preserve_coverage)
 {
   if (records.empty()) return;
   const SubmapKey key = submapKey(records.front());
@@ -127,18 +212,25 @@ void PvbsmMemory::removeRootEvidence(
         --submap->second.residual_count;
     }
   }
-  if (submap == submap_evidence_.end()) return;
-  if (submap->second.root_count > 0) --submap->second.root_count;
-  if (submap->second.root_count == 0)
-    submap_evidence_.erase(submap);
+  if (!preserve_coverage)
+  {
+    const RootKey root{
+        records.front().source_id,
+        records.front().root[0],
+        records.front().root[1],
+        records.front().root[2]};
+    clearRootObserved(root, records.front().submap_edge_roots);
+  }
 }
 
-void PvbsmMemory::eraseRoot(const RootKey &key)
+bool PvbsmMemory::eraseRoot(
+    const RootKey &key, bool preserve_coverage)
 {
   const auto root = roots_.find(key);
-  if (root == roots_.end()) return;
-  removeRootEvidence(root->second);
+  if (root == roots_.end()) return false;
+  removeRootEvidence(root->second, preserve_coverage);
   roots_.erase(root);
+  return true;
 }
 
 void PvbsmMemory::clearSource(uint16_t source_id)
@@ -151,7 +243,24 @@ void PvbsmMemory::clearSource(uint16_t source_id)
   for (const RootKey &root : roots_to_remove)
   {
     had_state = true;
-    eraseRoot(root);
+    eraseRoot(root, false);
+  }
+  for (auto submap = submap_evidence_.begin();
+       submap != submap_evidence_.end();)
+  {
+    if (submap->first.source_id == source_id)
+    {
+      had_state = true;
+      observed_root_count_ =
+          submap->second.root_count > observed_root_count_
+              ? 0
+              : observed_root_count_ - submap->second.root_count;
+      submap = submap_evidence_.erase(submap);
+    }
+    else
+    {
+      ++submap;
+    }
   }
   for (auto revision = revisions_.begin(); revision != revisions_.end();)
   {
@@ -214,7 +323,8 @@ void PvbsmMemory::applyDelta(const std::vector<PvbsmRecord> &records)
         [](const PvbsmRecord &record) { return record.kind == 2; });
     if (deleted)
     {
-      eraseRoot(key);
+      if (!eraseRoot(key, false))
+        clearRootObserved(key, root_records.front().submap_edge_roots);
       ++stats_.deleted_roots;
       ++stats_.accepted_root_updates;
       continue;
@@ -232,7 +342,7 @@ void PvbsmMemory::applyDelta(const std::vector<PvbsmRecord> &records)
     if (root_records.empty()) continue;
     if (root_records.size() > max_records_)
       root_records.resize(max_records_);
-    eraseRoot(key);
+    eraseRoot(key, true);
     roots_[key] = std::move(root_records);
     addRootEvidence(roots_[key]);
     ++stats_.accepted_root_updates;
@@ -255,8 +365,7 @@ void PvbsmMemory::enforceCapacity()
       continue;
     const auto root = roots_.find(oldest.key);
     if (root == roots_.end()) continue;
-    eraseRoot(oldest.key);
-    revisions_.erase(oldest.key);
+    eraseRoot(oldest.key, true);
     ++stats_.capacity_evictions;
   }
 }
@@ -284,7 +393,8 @@ void PvbsmMemory::compactAgeQueue()
 
 void PvbsmMemory::refreshStats()
 {
-  stats_.root_count = roots_.size();
+  stats_.root_count = observed_root_count_;
+  stats_.detailed_root_count = roots_.size();
   stats_.record_count = record_count_;
   stats_.plane_count = plane_count_;
   stats_.residual_count = residual_count_;
@@ -299,7 +409,7 @@ std::vector<PvbsmExplorationHint> PvbsmMemory::queryExplorationHints(
     std::size_t covered_root_target) const
 {
   const double voxel_size = std::max(0.01, root_voxel_size_m);
-  const uint8_t edge = std::max<uint8_t>(1, submap_edge_roots);
+  const uint8_t edge = SafeSubmapEdge(submap_edge_roots);
   const double coverage_target =
       static_cast<double>(std::max<std::size_t>(1, covered_root_target));
   std::vector<PvbsmExplorationHint> hints;
@@ -312,7 +422,6 @@ std::vector<PvbsmExplorationHint> PvbsmMemory::queryExplorationHints(
         static_cast<int32_t>(std::floor(point.y / voxel_size)),
         static_cast<int32_t>(std::floor(point.z / voxel_size))};
     PvbsmExplorationHint hint;
-    hint.root_observed = roots_.find(root) != roots_.end();
     const SubmapKey submap{
         source_id,
         FloorDivide(root.x, edge),
@@ -321,6 +430,14 @@ std::vector<PvbsmExplorationHint> PvbsmMemory::queryExplorationHints(
     const auto evidence = submap_evidence_.find(submap);
     if (evidence != submap_evidence_.end())
     {
+      const std::size_t index = submapRootIndex(root, edge);
+      const std::size_t word = index / 64U;
+      if (word < evidence->second.observed_words.size())
+      {
+        const uint64_t mask = uint64_t{1} << (index % 64U);
+        hint.root_observed =
+            (evidence->second.observed_words[word] & mask) != 0U;
+      }
       hint.submap_observed = true;
       hint.submap_coverage =
           std::min(1.0, evidence->second.root_count / coverage_target);

@@ -32,7 +32,10 @@ struct PvbsmRecord
 
 struct PvbsmMemoryStats
 {
+  // root_count is persistent observed coverage. detailed_root_count is the
+  // bounded plane/residual cache and may be smaller after demotion.
   std::size_t root_count = 0;
+  std::size_t detailed_root_count = 0;
   std::size_t record_count = 0;
   std::size_t plane_count = 0;
   std::size_t residual_count = 0;
@@ -99,6 +102,10 @@ private:
     std::size_t plane_count = 0;
     std::size_t residual_count = 0;
     double plane_confidence_sum = 0.0;
+    uint8_t edge_roots = 8;
+    // One bit per root in the logical submap. With the default 8^3 layout this
+    // is only 64 bytes and survives detailed-geometry demotion.
+    std::vector<uint64_t> observed_words;
   };
 
   std::size_t max_records_;
@@ -111,15 +118,24 @@ private:
   std::size_t record_count_ = 0;
   std::size_t plane_count_ = 0;
   std::size_t residual_count_ = 0;
+  std::size_t observed_root_count_ = 0;
 
-  void eraseRoot(const RootKey &key);
+  bool eraseRoot(const RootKey &key, bool preserve_coverage);
   void clearSource(uint16_t source_id);
   void enforceCapacity();
   void compactAgeQueue();
   void refreshStats();
   SubmapKey submapKey(const PvbsmRecord &record) const;
+  SubmapKey submapKey(
+      const RootKey &root, uint8_t submap_edge_roots) const;
+  std::size_t submapRootIndex(
+      const RootKey &root, uint8_t submap_edge_roots) const;
+  bool markRootObserved(const PvbsmRecord &record);
+  bool clearRootObserved(
+      const RootKey &root, uint8_t submap_edge_roots);
   void addRootEvidence(const std::vector<PvbsmRecord> &records);
-  void removeRootEvidence(const std::vector<PvbsmRecord> &records);
+  void removeRootEvidence(
+      const std::vector<PvbsmRecord> &records, bool preserve_coverage);
 };
 
 } // namespace daib_explorer

@@ -29,8 +29,9 @@ max_published_frontiers: 2000
 planning_output_radius_m: 12.0
 max_published_planning_points: 6000
 
-# Low-rate DAIB-PVBSM long-term geometry cache. This callback is independent
-# of the 10 Hz occupancy/frontier loop and never blocks local safety updates.
+# Low-rate DAIB-PVBSM long-term memory. This limit bounds detailed
+# plane/residual records; compact observed-root coverage survives demotion.
+# The callback is independent of the 10 Hz occupancy/frontier loop.
 pvbsm_memory_enabled: true
 pvbsm_memory_max_records: 200000
 max_pvbsm_records_per_delta: 2048

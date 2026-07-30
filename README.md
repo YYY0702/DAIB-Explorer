@@ -52,7 +52,7 @@ Outputs:
 | `/daib_explorer/ready` | `std_msgs/Bool` | Planner watchdog; latched state plus 1 Hz heartbeat |
 | `/daib_explorer/state` | `std_msgs/String` | Validation/debug |
 | `/daib_explorer/generation` | `std_msgs/UInt64` | Planner acknowledgement and monitoring |
-| `/daib_explorer/pvbsm_memory_stats` | `std_msgs/UInt64MultiArray` | Bounded long-term lightweight geometry statistics |
+| `/daib_explorer/pvbsm_memory_stats` | `std_msgs/UInt64MultiArray` | Persistent coverage plus bounded detailed-geometry statistics |
 
 The EGO planning cloud is a view of occupied cells within 12 m of the current
 vehicle position, capped at 6000 points by default. This limits ROS

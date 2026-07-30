@@ -18,6 +18,26 @@ rostopic echo /daib_slam/pvbsm_stats
 rostopic echo /daib_explorer/pvbsm_memory_stats
 ```
 
+`/daib_explorer/pvbsm_memory_stats` keeps its original first ten fields and
+appends `detailed_root_count` as field 11. Field 1 (`root_count`) is now the
+persistent observed-root count; it must not fall merely because field 11 or
+the detailed `record_count` is reduced by capacity demotion.
+
+For sliding-retirement validation, use a trajectory long enough to cross the
+enabled 100-root LIO window and verify:
+
+- the FAST log reports non-zero `Delete ... root voxels`;
+- PVBSM stats field 12 (`archived record count`) becomes non-zero;
+- PVBSM deletion count stays zero during ordinary sliding;
+- Explorer `root_count` does not drop when roots leave the LIO window;
+- the archive backlog drains instead of growing continuously.
+
+To exercise demotion without a very long run, temporarily override
+`pvbsm_memory_max_records` with a test-only value such as 1000.
+`record_count` and `detailed_root_count` must stay bounded, while
+`root_count` and observed-submap coverage remain. Restore 200000 for the
+normal onboard configuration.
+
 Acceptance criteria:
 
 - odometry and planning cloud are non-empty and update near the LIO rate;
