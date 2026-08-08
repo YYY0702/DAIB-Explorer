@@ -294,6 +294,76 @@ private:
     private_nh_.param("goal_switch_margin",
                       config.goal_switch_margin,
                       config.goal_switch_margin);
+    private_nh_.param("scene_mode", config.scene_mode, config.scene_mode);
+    private_nh_.param("frontier_cluster_size_m",
+                      config.frontier_cluster_size_m,
+                      config.frontier_cluster_size_m);
+    private_nh_.param("min_frontier_cluster_cells",
+                      config.min_frontier_cluster_cells,
+                      config.min_frontier_cluster_cells);
+    private_nh_.param("viewpoint_standoff_m",
+                      config.viewpoint_standoff_m,
+                      config.viewpoint_standoff_m);
+    private_nh_.param("viewpoint_search_radius_m",
+                      config.viewpoint_search_radius_m,
+                      config.viewpoint_search_radius_m);
+    private_nh_.param("min_wall_clearance_m",
+                      config.min_wall_clearance_m,
+                      config.min_wall_clearance_m);
+    private_nh_.param("max_safe_viewpoint_candidates",
+                      config.max_safe_viewpoint_candidates,
+                      config.max_safe_viewpoint_candidates);
+    private_nh_.param("preferred_min_goal_distance_m",
+                      config.preferred_min_goal_distance_m,
+                      config.preferred_min_goal_distance_m);
+    private_nh_.param("preferred_heading_change_deg",
+                      config.preferred_heading_change_deg,
+                      config.preferred_heading_change_deg);
+    private_nh_.param("fallback_heading_change_deg",
+                      config.fallback_heading_change_deg,
+                      config.fallback_heading_change_deg);
+    private_nh_.param("indoor_max_vertical_distance_m",
+                      config.indoor_max_vertical_distance_m,
+                      config.indoor_max_vertical_distance_m);
+    private_nh_.param("outdoor_max_vertical_distance_m",
+                      config.outdoor_max_vertical_distance_m,
+                      config.outdoor_max_vertical_distance_m);
+    private_nh_.param("indoor_max_climb_angle_deg",
+                      config.indoor_max_climb_angle_deg,
+                      config.indoor_max_climb_angle_deg);
+    private_nh_.param("outdoor_max_climb_angle_deg",
+                      config.outdoor_max_climb_angle_deg,
+                      config.outdoor_max_climb_angle_deg);
+    private_nh_.param("reachability_enabled",
+                      config.reachability_enabled,
+                      config.reachability_enabled);
+    private_nh_.param("reachability_max_expansions",
+                      config.reachability_max_expansions,
+                      config.reachability_max_expansions);
+    private_nh_.param("max_reachability_checks_per_cycle",
+                      config.max_reachability_checks_per_cycle,
+                      config.max_reachability_checks_per_cycle);
+    private_nh_.param("goal_reachability_check_rate_hz",
+                      config.goal_reachability_check_rate_hz,
+                      config.goal_reachability_check_rate_hz);
+    private_nh_.param("loop_escape_enabled",
+                      config.loop_escape_enabled,
+                      config.loop_escape_enabled);
+    private_nh_.param("loop_history_window_s",
+                      config.loop_history_window_s,
+                      config.loop_history_window_s);
+    private_nh_.param("loop_repeat_threshold",
+                      config.loop_repeat_threshold,
+                      config.loop_repeat_threshold);
+    private_nh_.param("loop_cluster_radius_m",
+                      config.loop_cluster_radius_m,
+                      config.loop_cluster_radius_m);
+    private_nh_.param("loop_max_displacement_m",
+                      config.loop_max_displacement_m,
+                      config.loop_max_displacement_m);
+    private_nh_.param("loop_escape_duration_s",
+                      config.loop_escape_duration_s,
+                      config.loop_escape_duration_s);
     private_nh_.param("dynamic_budget_enabled",
                       config.dynamic_budget_enabled,
                       config.dynamic_budget_enabled);
@@ -713,7 +783,10 @@ private:
                         << ", reason=" << decision.reason
                         << ", goal=(" << decision.position.x << ", "
                         << decision.position.y << ", " << decision.position.z
-                        << "), plan=" << decision.planning_time_ms << " ms");
+                        << "), tier=" << decision.constraint_tier
+                        << ", heading_change="
+                        << decision.heading_change_deg << " deg"
+                        << ", plan=" << decision.planning_time_ms << " ms");
       }
     }
 
@@ -750,7 +823,14 @@ private:
         << ", pvbsm=" << stats.pvbsm_scored_candidates << " scored/"
         << stats.pvbsm_unseen_candidates << " unseen"
         << ", pvbsm_best_adjustment="
-        << stats.pvbsm_best_adjustment);
+        << stats.pvbsm_best_adjustment
+        << ", mcsvf=" << stats.frontier_clusters << " clusters/"
+        << stats.safe_viewpoint_candidates << " viewpoints/"
+        << stats.reachability_checks << " reachability_checks/"
+        << stats.reachability_budget_exhaustions << " exhausted"
+        << ", loop_escape="
+        << (stats.loop_escape_active ? "active" : "normal")
+        << "/" << stats.loop_escape_activations << " activations");
   }
 };
 

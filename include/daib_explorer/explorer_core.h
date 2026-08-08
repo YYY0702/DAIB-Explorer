@@ -73,6 +73,40 @@ struct ExplorerConfig
   double max_goal_vertical_distance_m = 3.0;
   double goal_switch_margin = 0.15;
 
+  // DAIB-MCSVF: cluster raw frontier voxels, then place one safe viewpoint
+  // in known free space for each cluster before doing the original scoring.
+  std::string scene_mode = "indoor";
+  double frontier_cluster_size_m = 2.0;
+  int min_frontier_cluster_cells = 3;
+  double viewpoint_standoff_m = 1.0;
+  double viewpoint_search_radius_m = 1.5;
+  double min_wall_clearance_m = 0.75;
+  int max_safe_viewpoint_candidates = 64;
+  double preferred_min_goal_distance_m = 4.0;
+  double preferred_heading_change_deg = 60.0;
+  double fallback_heading_change_deg = 120.0;
+  double indoor_max_vertical_distance_m = 0.8;
+  double outdoor_max_vertical_distance_m = 1.5;
+  double indoor_max_climb_angle_deg = 15.0;
+  double outdoor_max_climb_angle_deg = 20.0;
+
+  // Bounded reachability prevents straight-line visibility from rejecting a
+  // valid goal around a corner. Direct free lines do not invoke A*.
+  bool reachability_enabled = true;
+  int reachability_max_expansions = 2500;
+  int max_reachability_checks_per_cycle = 12;
+  double goal_reachability_check_rate_hz = 2.0;
+
+  // Detect repeated short-range goal selections while the vehicle makes
+  // little progress. Escape mode blacklists those recent clusters and relaxes
+  // only the heading tier; wall/height/reachability constraints stay active.
+  bool loop_escape_enabled = true;
+  double loop_history_window_s = 30.0;
+  int loop_repeat_threshold = 3;
+  double loop_cluster_radius_m = 2.0;
+  double loop_max_displacement_m = 4.0;
+  double loop_escape_duration_s = 12.0;
+
   bool dynamic_budget_enabled = true;
   double lio_busy_threshold_ms = 25.0;
   double lio_overload_threshold_ms = 35.0;
@@ -103,6 +137,8 @@ struct GoalDecision
   double yaw = 0.0;
   double score = 0.0;
   double planning_time_ms = 0.0;
+  int constraint_tier = -1;
+  double heading_change_deg = 0.0;
   std::string state = "WAIT_FOR_MAP";
   std::string reason = "not_initialized";
 };
@@ -133,6 +169,12 @@ struct ExplorerStats
   std::size_t pvbsm_scored_candidates = 0;
   std::size_t pvbsm_unseen_candidates = 0;
   double pvbsm_best_adjustment = 0.0;
+  std::size_t frontier_clusters = 0;
+  std::size_t safe_viewpoint_candidates = 0;
+  uint64_t reachability_checks = 0;
+  uint64_t reachability_budget_exhaustions = 0;
+  uint64_t loop_escape_activations = 0;
+  bool loop_escape_active = false;
 };
 
 class ExplorerCore
@@ -182,6 +224,17 @@ private:
   bool goal_reached_ = false;
   bool goal_blocked_ = false;
   bool goal_timeout_ = false;
+  Quaternion current_orientation_;
+  double last_goal_reachability_check_time_ = -1.0;
+  bool cached_goal_reachable_ = true;
+  double loop_escape_until_ = -1.0;
+  struct GoalHistoryEntry
+  {
+    VoxelKey cluster;
+    Vec3 vehicle_position;
+    double timestamp = 0.0;
+  };
+  std::deque<GoalHistoryEntry> goal_history_;
   PvbsmBatchQuery pvbsm_batch_query_;
 
   static double distance(const Vec3 &a, const Vec3 &b);
@@ -195,6 +248,18 @@ private:
   void updateFrontiers();
   bool segmentBlocked(const Vec3 &start, const Vec3 &end,
                       double *known_free_ratio = nullptr) const;
+  bool pathReachable(const Vec3 &start, const Vec3 &end,
+                     int max_expansions, bool *budget_exhausted = nullptr) const;
+  bool hasWallClearance(const VoxelKey &voxel) const;
+  bool makeSafeViewpoint(const std::vector<VoxelKey> &cluster,
+                         Vec3 &viewpoint, VoxelKey &representative) const;
+  std::vector<std::vector<VoxelKey>> frontierClusters() const;
+  double currentYaw() const;
+  double headingChange(const Vec3 &position, const Vec3 &goal) const;
+  bool loopDetected(const Vec3 &position, double timestamp);
+  bool recentlySelectedCluster(const VoxelKey &cluster) const;
+  void rememberSelectedCluster(const VoxelKey &cluster,
+                               const Vec3 &position, double timestamp);
   double frontierScore(const VoxelKey &key, const Vec3 &position) const;
   double pvbsmScoreAdjustment(const PvbsmExplorationHint &hint) const;
   void updateVisitMemory(const Vec3 &position);

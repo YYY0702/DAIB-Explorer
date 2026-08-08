@@ -83,6 +83,42 @@ max_goal_distance_m: 15.0
 max_goal_vertical_distance_m: 3.0
 goal_switch_margin: 0.15
 
+# DAIB-MCSVF: first reduce raw frontier voxels into local clusters, then place
+# one goal in known free space behind each boundary. These are hard filters,
+# not extra score terms, so unsafe wall-adjacent and abrupt-turn goals cannot
+# win merely because their information score is high.
+scene_mode: indoor                  # indoor / outdoor, manual switch
+frontier_cluster_size_m: 2.0
+min_frontier_cluster_cells: 3
+viewpoint_standoff_m: 1.0
+viewpoint_search_radius_m: 1.5
+min_wall_clearance_m: 0.75
+max_safe_viewpoint_candidates: 64
+preferred_min_goal_distance_m: 4.0
+preferred_heading_change_deg: 60.0
+fallback_heading_change_deg: 120.0
+indoor_max_vertical_distance_m: 0.8
+outdoor_max_vertical_distance_m: 1.5
+indoor_max_climb_angle_deg: 15.0
+outdoor_max_climb_angle_deg: 20.0
+
+# Straight unobstructed goals skip A*. Around corners, a bounded known-free
+# search prevents the old line-of-sight test from rejecting maze exits.
+reachability_enabled: true
+reachability_max_expansions: 2500
+max_reachability_checks_per_cycle: 12
+goal_reachability_check_rate_hz: 2.0
+
+# If the same coarse frontier is selected repeatedly while the aircraft makes
+# little net progress, temporarily blacklist recent clusters and allow the
+# final 120-180 degree escape tier. All safety constraints remain enabled.
+loop_escape_enabled: true
+loop_history_window_s: 30.0
+loop_repeat_threshold: 3
+loop_cluster_radius_m: 2.0
+loop_max_displacement_m: 4.0
+loop_escape_duration_s: 12.0
+
 # Joint compute budget: reduce exploration work while LIO is busy. This never
 # changes FAST-LIVO2 itself; it only consumes its runtime telemetry.
 dynamic_budget_enabled: true

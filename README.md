@@ -29,6 +29,16 @@ The internal schedule is deliberately multi-rate:
 Dirty cells accumulate in a deduplicated set between frontier cycles, so the
 lower frontier rate does not discard occupancy changes.
 
+Goal selection uses DAIB-MCSVF (Motion-Constrained Safe-Viewpoint Frontier):
+raw frontier voxels are grouped into 2 m local clusters, one observation pose
+is searched in known free space for each cluster, and wall clearance,
+scene-specific height/climb, heading and bounded reachability are applied as
+hard filters before the existing DAIB/PVBSM information score. The normal
+tiers prefer goals at least 4 m away within 60 degrees, then allow a nearer
+goal and finally up to 120 degrees. A 120--180 degree tier is available only
+during detected local-loop escape. This keeps ordinary flight smooth without
+making a real maze exit permanently unreachable.
+
 ## ROS contract
 
 Inputs:

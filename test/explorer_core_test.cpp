@@ -200,6 +200,31 @@ TEST(ExplorerCore, ClearsStaleOccupancyAtCurrentVehicleVoxel)
   EXPECT_EQ(explorer.stats().occupied_cells, 0U);
 }
 
+TEST(ExplorerCore, AppliesHeadingTiersBeforeFrontierScore)
+{
+  ExplorerConfig config;
+  config.min_goal_distance_m = 1.0;
+  config.max_goal_distance_m = 10.0;
+
+  ExplorerCore facing_positive_x(config);
+  facing_positive_x.update(
+      {0.0, 0.0, 0.0}, {}, {{-8.0, 0.0, 0.0}}, 1.0);
+  GoalDecision rejected;
+  ASSERT_TRUE(facing_positive_x.consumeDecision(rejected));
+  EXPECT_FALSE(rejected.valid);
+
+  ExplorerCore facing_negative_x(config);
+  facing_negative_x.update(
+      {0.0, 0.0, 0.0}, {0.0, 0.0, 1.0, 0.0},
+      {{-8.0, 0.0, 0.0}}, 1.0);
+  GoalDecision accepted;
+  ASSERT_TRUE(facing_negative_x.consumeDecision(accepted));
+  ASSERT_TRUE(accepted.valid);
+  EXPECT_LT(accepted.position.x, 0.0);
+  EXPECT_GT(facing_negative_x.stats().frontier_clusters, 0U);
+  EXPECT_GT(facing_negative_x.stats().safe_viewpoint_candidates, 0U);
+}
+
 TEST(PvbsmMemory, AppliesVersionsDeletionAndNegativeSubmaps)
 {
   PvbsmMemory memory(100);
@@ -376,7 +401,7 @@ TEST(ExplorerCore, PrefersPvbsmUnseenFrontier)
       });
 
   explorer.update(
-      {0.0, 0.0, 0.0}, {},
+      {0.0, 0.0, 0.0}, {0.0, 0.0, 1.0, 0.0},
       {{8.0, 0.0, 0.0}, {-8.0, 0.0, 0.0}}, 1.0);
   GoalDecision decision;
   ASSERT_TRUE(explorer.consumeDecision(decision));

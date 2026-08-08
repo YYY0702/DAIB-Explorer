@@ -78,6 +78,17 @@ Acceptance criteria:
   submaps contribute a positive `pvbsm_best_adjustment`;
 - replaying a previously mapped region reduces or makes the PVBSM adjustment
   negative instead of repeatedly rewarding the same frontier.
+- every valid goal is in a known-free voxel and has at least
+  `min_wall_clearance_m` from occupied voxel centers;
+- normal logs report non-zero `mcsvf=... clusters/... viewpoints`, and goals
+  obey the configured 60/120 degree heading tiers plus indoor/outdoor height
+  and climb limits;
+- a maze replay may increase `reachability_checks`, but
+  `reachability_budget_exhaustions` should stay rare and the 1 Hz plan time
+  must remain within the board budget;
+- repeated local goals with little odometry displacement eventually publish
+  reason `loop_escape`; after `loop_escape_duration_s`, the state returns to
+  normal constraints.
 
 ## 3. Compute isolation
 

@@ -46,6 +46,15 @@ well-covered submaps and exact represented roots, rewards unseen submaps, and
 adds a bounded structural-support term during degeneracy. The rolling
 occupancy map remains the sole collision authority.
 
+Before scoring, DAIB-MCSVF spatially clusters the active frontier set and
+converts each boundary cluster into one wall-clear known-free viewpoint.
+Candidates then pass scene-specific vertical/climb limits and a three-tier
+heading/distance filter. Straight free segments require no graph search; only
+wall-occluded candidates invoke bounded A* over known-free planning voxels.
+Repeated selections of the same coarse frontier with little vehicle progress
+activate a temporary escape tier that blacklists recent clusters. These
+operations stay inside the 1 Hz goal stage and do not add work to FAST-LIVO2.
+
 ## Three map layers
 
 1. **Rolling occupancy map**: bounded by `planning_map_radius_m`, updated at

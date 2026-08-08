@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cmath>
 #include <limits>
+#include <queue>
 #include <utility>
 
 namespace daib_explorer
@@ -89,6 +90,56 @@ void ExplorerCore::sanitizeConfig()
       std::max(config_.planning_voxel_size_m,
                config_.max_goal_vertical_distance_m);
   config_.goal_switch_margin = clamp(config_.goal_switch_margin, 0.0, 1.0);
+  if (config_.scene_mode != "indoor" && config_.scene_mode != "outdoor")
+    config_.scene_mode = "indoor";
+  config_.frontier_cluster_size_m =
+      std::max(config_.planning_voxel_size_m,
+               config_.frontier_cluster_size_m);
+  config_.min_frontier_cluster_cells =
+      std::max(1, config_.min_frontier_cluster_cells);
+  config_.viewpoint_standoff_m =
+      std::max(config_.planning_voxel_size_m, config_.viewpoint_standoff_m);
+  config_.viewpoint_search_radius_m =
+      std::max(config_.planning_voxel_size_m,
+               config_.viewpoint_search_radius_m);
+  config_.min_wall_clearance_m =
+      std::max(0.0, config_.min_wall_clearance_m);
+  config_.max_safe_viewpoint_candidates =
+      std::max(1, config_.max_safe_viewpoint_candidates);
+  config_.preferred_min_goal_distance_m =
+      clamp(config_.preferred_min_goal_distance_m,
+            config_.min_goal_distance_m, config_.max_goal_distance_m);
+  config_.preferred_heading_change_deg =
+      clamp(config_.preferred_heading_change_deg, 0.0, 180.0);
+  config_.fallback_heading_change_deg =
+      clamp(config_.fallback_heading_change_deg,
+            config_.preferred_heading_change_deg, 180.0);
+  config_.indoor_max_vertical_distance_m =
+      std::max(config_.planning_voxel_size_m,
+               config_.indoor_max_vertical_distance_m);
+  config_.outdoor_max_vertical_distance_m =
+      std::max(config_.planning_voxel_size_m,
+               config_.outdoor_max_vertical_distance_m);
+  config_.indoor_max_climb_angle_deg =
+      clamp(config_.indoor_max_climb_angle_deg, 0.0, 89.0);
+  config_.outdoor_max_climb_angle_deg =
+      clamp(config_.outdoor_max_climb_angle_deg, 0.0, 89.0);
+  config_.reachability_max_expansions =
+      std::max(32, config_.reachability_max_expansions);
+  config_.max_reachability_checks_per_cycle =
+      std::max(1, config_.max_reachability_checks_per_cycle);
+  config_.goal_reachability_check_rate_hz =
+      std::max(0.1, config_.goal_reachability_check_rate_hz);
+  config_.loop_history_window_s =
+      std::max(1.0, config_.loop_history_window_s);
+  config_.loop_repeat_threshold = std::max(2, config_.loop_repeat_threshold);
+  config_.loop_cluster_radius_m =
+      std::max(config_.planning_voxel_size_m, config_.loop_cluster_radius_m);
+  config_.loop_max_displacement_m =
+      std::max(config_.planning_voxel_size_m,
+               config_.loop_max_displacement_m);
+  config_.loop_escape_duration_s =
+      std::max(1.0, config_.loop_escape_duration_s);
   config_.lio_busy_threshold_ms = std::max(1.0, config_.lio_busy_threshold_ms);
   config_.lio_overload_threshold_ms =
       std::max(config_.lio_busy_threshold_ms, config_.lio_overload_threshold_ms);
@@ -351,6 +402,264 @@ bool ExplorerCore::segmentBlocked(const Vec3 &start, const Vec3 &end,
   return false;
 }
 
+bool ExplorerCore::pathReachable(const Vec3 &start, const Vec3 &end,
+                                 int max_expansions,
+                                 bool *budget_exhausted) const
+{
+  if (budget_exhausted) *budget_exhausted = false;
+  if (!config_.reachability_enabled || !segmentBlocked(start, end))
+    return true;
+
+  const VoxelKey start_key = key(start, config_.planning_voxel_size_m);
+  const VoxelKey goal_key = key(end, config_.planning_voxel_size_m);
+  if (cellState(goal_key) != 0) return false;
+  struct Node
+  {
+    VoxelKey key;
+    int g = 0;
+    int f = 0;
+  };
+  struct Greater
+  {
+    bool operator()(const Node &left, const Node &right) const
+    {
+      return left.f > right.f;
+    }
+  };
+  const auto heuristic = [&goal_key](const VoxelKey &voxel)
+  {
+    return static_cast<int>(std::llabs(voxel.x - goal_key.x) +
+                            std::llabs(voxel.y - goal_key.y) +
+                            std::llabs(voxel.z - goal_key.z));
+  };
+  std::priority_queue<Node, std::vector<Node>, Greater> open;
+  std::unordered_map<VoxelKey, int, VoxelKeyHash> best_g;
+  open.push({start_key, 0, heuristic(start_key)});
+  best_g[start_key] = 0;
+  int expansions = 0;
+  while (!open.empty() && expansions < max_expansions)
+  {
+    const Node current = open.top();
+    open.pop();
+    const auto best_iter = best_g.find(current.key);
+    if (best_iter == best_g.end() || current.g != best_iter->second) continue;
+    if (current.key == goal_key) return true;
+    ++expansions;
+    for (const auto &offset : kNeighbors)
+    {
+      const VoxelKey next{current.key.x + offset[0],
+                          current.key.y + offset[1],
+                          current.key.z + offset[2]};
+      if (!(next == goal_key) && cellState(next) != 0) continue;
+      const int next_g = current.g + 1;
+      const auto next_iter = best_g.find(next);
+      if (next_iter != best_g.end() && next_iter->second <= next_g) continue;
+      best_g[next] = next_g;
+      open.push({next, next_g, next_g + heuristic(next)});
+    }
+  }
+  if (budget_exhausted && !open.empty()) *budget_exhausted = true;
+  return false;
+}
+
+bool ExplorerCore::hasWallClearance(const VoxelKey &voxel) const
+{
+  const int radius = static_cast<int>(std::ceil(
+      config_.min_wall_clearance_m / config_.planning_voxel_size_m));
+  const double max_distance_sq =
+      config_.min_wall_clearance_m * config_.min_wall_clearance_m;
+  for (int dx = -radius; dx <= radius; ++dx)
+  {
+    for (int dy = -radius; dy <= radius; ++dy)
+    {
+      for (int dz = -radius; dz <= radius; ++dz)
+      {
+        const double metric_sq = config_.planning_voxel_size_m *
+            config_.planning_voxel_size_m * (dx * dx + dy * dy + dz * dz);
+        if (metric_sq > max_distance_sq) continue;
+        if (cellState({voxel.x + dx, voxel.y + dy, voxel.z + dz}) == 1)
+          return false;
+      }
+    }
+  }
+  return true;
+}
+
+std::vector<std::vector<VoxelKey>> ExplorerCore::frontierClusters() const
+{
+  std::vector<std::vector<VoxelKey>> clusters;
+  std::unordered_map<VoxelKey, std::vector<VoxelKey>, VoxelKeyHash> buckets;
+  for (const VoxelKey &voxel : frontiers_)
+  {
+    const Vec3 point = center(voxel, config_.planning_voxel_size_m);
+    buckets[key(point, config_.frontier_cluster_size_m)].push_back(voxel);
+  }
+  clusters.reserve(buckets.size());
+  for (auto &entry : buckets)
+  {
+    if (entry.second.size() >=
+        static_cast<std::size_t>(config_.min_frontier_cluster_cells))
+      clusters.push_back(std::move(entry.second));
+  }
+  return clusters;
+}
+
+bool ExplorerCore::makeSafeViewpoint(const std::vector<VoxelKey> &cluster,
+                                     Vec3 &viewpoint,
+                                     VoxelKey &representative) const
+{
+  if (cluster.empty()) return false;
+  Vec3 centroid;
+  Vec3 unknown_direction;
+  for (const VoxelKey &voxel : cluster)
+  {
+    const Vec3 point = center(voxel, config_.planning_voxel_size_m);
+    centroid.x += point.x;
+    centroid.y += point.y;
+    centroid.z += point.z;
+    for (const auto &offset : kNeighbors)
+    {
+      if (cellState({voxel.x + offset[0], voxel.y + offset[1],
+                     voxel.z + offset[2]}) < 0)
+      {
+        unknown_direction.x += offset[0];
+        unknown_direction.y += offset[1];
+        unknown_direction.z += offset[2];
+      }
+    }
+  }
+  const double inverse_size = 1.0 / cluster.size();
+  centroid.x *= inverse_size;
+  centroid.y *= inverse_size;
+  centroid.z *= inverse_size;
+  representative = cluster.front();
+  double representative_distance = std::numeric_limits<double>::infinity();
+  for (const VoxelKey &voxel : cluster)
+  {
+    const double candidate_distance =
+        distance(center(voxel, config_.planning_voxel_size_m), centroid);
+    if (candidate_distance < representative_distance)
+    {
+      representative_distance = candidate_distance;
+      representative = voxel;
+    }
+  }
+
+  const double direction_norm = std::sqrt(
+      unknown_direction.x * unknown_direction.x +
+      unknown_direction.y * unknown_direction.y +
+      unknown_direction.z * unknown_direction.z);
+  Vec3 desired = centroid;
+  if (direction_norm >= 1e-6)
+  {
+    desired.x -= config_.viewpoint_standoff_m *
+                 unknown_direction.x / direction_norm;
+    desired.y -= config_.viewpoint_standoff_m *
+                 unknown_direction.y / direction_norm;
+    desired.z -= config_.viewpoint_standoff_m *
+                 unknown_direction.z / direction_norm;
+  }
+  const VoxelKey desired_key = key(desired, config_.planning_voxel_size_m);
+  const int search_radius = static_cast<int>(std::ceil(
+      config_.viewpoint_search_radius_m / config_.planning_voxel_size_m));
+  for (int shell = 0; shell <= search_radius; ++shell)
+  {
+    for (int dx = -shell; dx <= shell; ++dx)
+    {
+      for (int dy = -shell; dy <= shell; ++dy)
+      {
+        for (int dz = -shell; dz <= shell; ++dz)
+        {
+          if (std::max({std::abs(dx), std::abs(dy), std::abs(dz)}) != shell)
+            continue;
+          const VoxelKey candidate_key{desired_key.x + dx,
+                                       desired_key.y + dy,
+                                       desired_key.z + dz};
+          if (cellState(candidate_key) != 0 ||
+              !hasWallClearance(candidate_key))
+            continue;
+          const Vec3 candidate =
+              center(candidate_key, config_.planning_voxel_size_m);
+          if (segmentBlocked(candidate, centroid)) continue;
+          viewpoint = candidate;
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+double ExplorerCore::currentYaw() const
+{
+  const double sin_yaw = 2.0 *
+      (current_orientation_.w * current_orientation_.z +
+       current_orientation_.x * current_orientation_.y);
+  const double cos_yaw = 1.0 - 2.0 *
+      (current_orientation_.y * current_orientation_.y +
+       current_orientation_.z * current_orientation_.z);
+  return std::atan2(sin_yaw, cos_yaw);
+}
+
+double ExplorerCore::headingChange(const Vec3 &position,
+                                   const Vec3 &goal) const
+{
+  constexpr double kPi = 3.14159265358979323846;
+  const double desired = std::atan2(goal.y - position.y,
+                                    goal.x - position.x);
+  return std::fabs(std::remainder(desired - currentYaw(), 2.0 * kPi)) *
+         180.0 / kPi;
+}
+
+bool ExplorerCore::loopDetected(const Vec3 &position, double timestamp)
+{
+  while (!goal_history_.empty() &&
+         timestamp - goal_history_.front().timestamp >
+             config_.loop_history_window_s)
+    goal_history_.pop_front();
+  if (!config_.loop_escape_enabled ||
+      goal_history_.size() <
+          static_cast<std::size_t>(config_.loop_repeat_threshold))
+    return false;
+  struct ClusterHistory
+  {
+    int count = 0;
+    Vec3 first_vehicle_position;
+  };
+  std::unordered_map<VoxelKey, ClusterHistory, VoxelKeyHash> counts;
+  for (const GoalHistoryEntry &entry : goal_history_)
+  {
+    ClusterHistory &history = counts[entry.cluster];
+    if (history.count == 0)
+      history.first_vehicle_position = entry.vehicle_position;
+    ++history.count;
+  }
+  for (const auto &entry : counts)
+  {
+    if (entry.second.count >= config_.loop_repeat_threshold &&
+        distance(position, entry.second.first_vehicle_position) <=
+            config_.loop_max_displacement_m)
+      return true;
+  }
+  return false;
+}
+
+bool ExplorerCore::recentlySelectedCluster(const VoxelKey &cluster) const
+{
+  for (const GoalHistoryEntry &entry : goal_history_)
+  {
+    if (entry.cluster == cluster) return true;
+  }
+  return false;
+}
+
+void ExplorerCore::rememberSelectedCluster(const VoxelKey &cluster,
+                                           const Vec3 &position,
+                                           double timestamp)
+{
+  goal_history_.push_back({cluster, position, timestamp});
+}
+
 double ExplorerCore::frontierScore(const VoxelKey &voxel,
                                    const Vec3 &position) const
 {
@@ -424,30 +733,156 @@ void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
   const double max_distance =
       degenerate_ ? config_.degenerate_max_goal_distance_m
                   : config_.max_goal_distance_m;
+  const double max_vertical = std::min(
+      config_.max_goal_vertical_distance_m,
+      config_.scene_mode == "outdoor"
+          ? config_.outdoor_max_vertical_distance_m
+          : config_.indoor_max_vertical_distance_m);
+  const double max_climb_angle =
+      config_.scene_mode == "outdoor"
+          ? config_.outdoor_max_climb_angle_deg
+          : config_.indoor_max_climb_angle_deg;
+  const bool detected_loop = loopDetected(position, timestamp);
+  if (detected_loop && timestamp >= loop_escape_until_)
+  {
+    loop_escape_until_ = timestamp + config_.loop_escape_duration_s;
+    ++stats_.loop_escape_activations;
+  }
+  const bool escape_active = timestamp < loop_escape_until_;
+  stats_.loop_escape_active = escape_active;
   struct Candidate
   {
     VoxelKey voxel;
+    VoxelKey cluster;
     Vec3 point;
     double known_free = 0.0;
+    double distance = 0.0;
+    double heading_change_deg = 0.0;
+    int tier = 0;
   };
   std::vector<Candidate> candidates;
   candidates.reserve(static_cast<std::size_t>(budget));
+  const std::vector<std::vector<VoxelKey>> clusters = frontierClusters();
+  stats_.frontier_clusters = clusters.size();
+  struct ClusterOrder
+  {
+    const std::vector<VoxelKey> *cluster = nullptr;
+    int heading_tier = 0;
+    VoxelKey stable_key;
+  };
+  std::vector<ClusterOrder> ordered_clusters;
+  ordered_clusters.reserve(clusters.size());
+  for (const std::vector<VoxelKey> &cluster : clusters)
+  {
+    Vec3 centroid;
+    VoxelKey stable_key = cluster.front();
+    for (const VoxelKey &voxel : cluster)
+    {
+      const Vec3 point = center(voxel, config_.planning_voxel_size_m);
+      centroid.x += point.x;
+      centroid.y += point.y;
+      centroid.z += point.z;
+      if (voxel.x < stable_key.x ||
+          (voxel.x == stable_key.x && voxel.y < stable_key.y) ||
+          (voxel.x == stable_key.x && voxel.y == stable_key.y &&
+           voxel.z < stable_key.z))
+        stable_key = voxel;
+    }
+    centroid.x /= cluster.size();
+    centroid.y /= cluster.size();
+    centroid.z /= cluster.size();
+    const double approximate_heading = headingChange(position, centroid);
+    const int approximate_tier =
+        approximate_heading <= config_.preferred_heading_change_deg
+            ? 0
+            : approximate_heading <= config_.fallback_heading_change_deg
+                  ? 1
+                  : 2;
+    ordered_clusters.push_back({&cluster, approximate_tier, stable_key});
+  }
+  std::sort(
+      ordered_clusters.begin(), ordered_clusters.end(),
+      [](const ClusterOrder &left, const ClusterOrder &right)
+      {
+        if (left.heading_tier != right.heading_tier)
+          return left.heading_tier < right.heading_tier;
+        if (left.cluster->size() != right.cluster->size())
+          return left.cluster->size() > right.cluster->size();
+        if (left.stable_key.x != right.stable_key.x)
+          return left.stable_key.x < right.stable_key.x;
+        if (left.stable_key.y != right.stable_key.y)
+          return left.stable_key.y < right.stable_key.y;
+        return left.stable_key.z < right.stable_key.z;
+      });
+  int reachability_checks = 0;
   int evaluated = 0;
-  for (const VoxelKey &voxel : frontiers_)
+  const int viewpoint_budget = std::max(
+      1, static_cast<int>(std::lround(
+             config_.max_safe_viewpoint_candidates * stats_.budget_scale)));
+  for (const ClusterOrder &ordered_cluster : ordered_clusters)
   {
     if (evaluated++ >= budget) break;
-    if (cellState(voxel) != 0) continue;
-    const Vec3 candidate = center(voxel, config_.planning_voxel_size_m);
+    if (static_cast<int>(candidates.size()) >= viewpoint_budget) break;
+    const std::vector<VoxelKey> &frontier_cluster = *ordered_cluster.cluster;
+    Vec3 candidate;
+    VoxelKey representative;
+    if (!makeSafeViewpoint(frontier_cluster, candidate, representative))
+      continue;
     const double candidate_distance = distance(candidate, position);
+    const double horizontal_distance = std::hypot(
+        candidate.x - position.x, candidate.y - position.y);
+    const double climb_angle = std::atan2(
+        std::fabs(candidate.z - position.z),
+        std::max(config_.planning_voxel_size_m, horizontal_distance)) *
+        180.0 / 3.14159265358979323846;
     if (candidate_distance < config_.min_goal_distance_m ||
         candidate_distance > max_distance ||
-        std::fabs(candidate.z - position.z) >
-            config_.max_goal_vertical_distance_m)
+        std::fabs(candidate.z - position.z) > max_vertical ||
+        climb_angle > max_climb_angle)
       continue;
     double known_free = 0.0;
-    if (segmentBlocked(position, candidate, &known_free)) continue;
-    candidates.push_back({voxel, candidate, known_free});
+    const bool direct_blocked =
+        segmentBlocked(position, candidate, &known_free);
+    if (direct_blocked)
+    {
+      if (!config_.reachability_enabled ||
+          reachability_checks >= config_.max_reachability_checks_per_cycle)
+        continue;
+      bool exhausted = false;
+      ++reachability_checks;
+      ++stats_.reachability_checks;
+      const int expansion_budget = std::max(
+          32, static_cast<int>(std::lround(
+                  config_.reachability_max_expansions * stats_.budget_scale)));
+      if (!pathReachable(position, candidate, expansion_budget, &exhausted))
+      {
+        if (exhausted) ++stats_.reachability_budget_exhaustions;
+        continue;
+      }
+    }
+    const double heading = headingChange(position, candidate);
+    int tier = 3;
+    if (candidate_distance >= config_.preferred_min_goal_distance_m &&
+        heading <= config_.preferred_heading_change_deg)
+      tier = 0;
+    else if (heading <= config_.preferred_heading_change_deg)
+      tier = 1;
+    else if (heading <= config_.fallback_heading_change_deg)
+      tier = 2;
+    else if (!escape_active)
+      continue;
+    const Vec3 representative_point =
+        center(representative, config_.planning_voxel_size_m);
+    candidates.push_back(
+        {representative,
+         key(representative_point, config_.loop_cluster_radius_m),
+         candidate,
+         known_free,
+         candidate_distance,
+         heading,
+         tier});
   }
+  stats_.safe_viewpoint_candidates = candidates.size();
 
   std::vector<PvbsmExplorationHint> pvbsm_hints;
   std::size_t current_goal_hint_index =
@@ -482,10 +917,36 @@ void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
   stats_.pvbsm_best_adjustment = 0.0;
   double best_score = -std::numeric_limits<double>::infinity();
   Vec3 best;
+  VoxelKey best_cluster;
+  double best_heading_change = 0.0;
   bool found = false;
+  int selected_tier = 4;
+  bool have_fresh_cluster = false;
+  if (escape_active)
+  {
+    for (const Candidate &candidate : candidates)
+    {
+      if (!recentlySelectedCluster(candidate.cluster))
+      {
+        have_fresh_cluster = true;
+        break;
+      }
+    }
+  }
+  for (const Candidate &candidate : candidates)
+  {
+    if (escape_active && have_fresh_cluster &&
+        recentlySelectedCluster(candidate.cluster))
+      continue;
+    selected_tier = std::min(selected_tier, candidate.tier);
+  }
   for (std::size_t index = 0; index < candidates.size(); ++index)
   {
     const Candidate &candidate = candidates[index];
+    if (candidate.tier != selected_tier) continue;
+    if (escape_active && have_fresh_cluster &&
+        recentlySelectedCluster(candidate.cluster))
+      continue;
     double pvbsm_adjustment = 0.0;
     if (!pvbsm_hints.empty())
     {
@@ -503,6 +964,8 @@ void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
     {
       best_score = score;
       best = candidate.point;
+      best_cluster = candidate.cluster;
+      best_heading_change = candidate.heading_change_deg;
       found = true;
       stats_.pvbsm_best_adjustment = pvbsm_adjustment;
     }
@@ -541,6 +1004,10 @@ void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
     decision_.planning_time_ms = elapsed.count();
     decision_.reason = "goal_timeout_same_goal";
     ++stats_.suppressed_goal_republishes;
+    // A suppressed publication is still a repeated planning choice. Keep it
+    // in the loop detector so a vehicle stuck on one unchanged frontier can
+    // enter escape mode instead of refreshing that goal forever.
+    rememberSelectedCluster(best_cluster, position, timestamp);
     return;
   }
 
@@ -575,8 +1042,11 @@ void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
   decision_.yaw = std::atan2(best.y - position.y, best.x - position.x);
   decision_.score = best_score;
   decision_.planning_time_ms = elapsed.count();
+  decision_.constraint_tier = selected_tier;
+  decision_.heading_change_deg = best_heading_change;
   decision_.state = degenerate_ ? "DEGRADED_EXPLORE" : "EXPLORE";
-  if (!had_goal) decision_.reason = "initial_frontier";
+  if (escape_active) decision_.reason = "loop_escape";
+  else if (!had_goal) decision_.reason = "initial_frontier";
   else if (goal_reached_) decision_.reason = "goal_reached";
   else if (goal_blocked_) decision_.reason = "new_obstacle";
   else if (goal_timeout_) decision_.reason = "goal_timeout";
@@ -584,6 +1054,7 @@ void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
   goal_set_time_ = timestamp;
   blocked_streak_ = 0;
   ++decision_.generation;
+  rememberSelectedCluster(best_cluster, position, timestamp);
 }
 
 void ExplorerCore::updateGoalStatus(const Vec3 &position, double timestamp)
@@ -594,8 +1065,28 @@ void ExplorerCore::updateGoalStatus(const Vec3 &position, double timestamp)
       had_goal &&
       distance(decision_.position, position) <=
           config_.goal_reached_distance_m;
-  const bool raw_blocked =
+  const bool line_blocked =
       had_goal && segmentBlocked(position, decision_.position);
+  if (!line_blocked)
+  {
+    cached_goal_reachable_ = true;
+  }
+  else if (last_goal_reachability_check_time_ < 0.0 ||
+           timestamp < last_goal_reachability_check_time_ ||
+           timestamp - last_goal_reachability_check_time_ + 1e-9 >=
+               1.0 / config_.goal_reachability_check_rate_hz)
+  {
+    last_goal_reachability_check_time_ = timestamp;
+    bool exhausted = false;
+    ++stats_.reachability_checks;
+    const int expansion_budget = std::max(
+        32, static_cast<int>(std::lround(
+                config_.reachability_max_expansions * stats_.budget_scale)));
+    cached_goal_reachable_ = pathReachable(
+        position, decision_.position, expansion_budget, &exhausted);
+    if (exhausted) ++stats_.reachability_budget_exhaustions;
+  }
+  const bool raw_blocked = line_blocked && !cached_goal_reachable_;
   if (!had_goal || goal_reached_)
     blocked_streak_ = 0;
   else if (raw_blocked)
@@ -627,7 +1118,7 @@ void ExplorerCore::update(const Vec3 &position,
                           const Quaternion &orientation,
                           const std::vector<Vec3> &points, double timestamp)
 {
-  (void)orientation;  // Kept in the public API for ROS/interface compatibility.
+  current_orientation_ = orientation;
   const auto start = std::chrono::steady_clock::now();
   ++update_id_;
   ++stats_.map_updates;
