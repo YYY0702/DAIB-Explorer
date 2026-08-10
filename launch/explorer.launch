@@ -1,6 +1,26 @@
 <launch>
   <arg name="config" default="$(find daib_explorer)/config/explorer.yaml"/>
   <arg name="use_sim_time" default="false"/>
+  <arg name="odom_topic" default="/daib_slam/odom"/>
+  <arg name="cloud_topic" default="/daib_slam/planning_cloud"/>
+  <arg name="pvbsm_memory_enabled" default="true"/>
+  <arg name="pvbsm_scoring_enabled" default="true"/>
+  <arg name="min_goal_distance_m" default="1.5"/>
+  <arg name="max_goal_distance_m" default="8.0"/>
+  <arg name="max_goal_vertical_distance_m" default="3.0"/>
+  <arg name="min_known_free_path_ratio" default="0.5"/>
+  <arg name="viewpoint_standoff_m" default="1.0"/>
+  <arg name="min_wall_clearance_m" default="0.5"/>
+  <arg name="max_heading_change_deg" default="120.0"/>
+  <arg name="allow_periodic_goal_switch" default="false"/>
+  <arg name="goal_timeout_s" default="0.0"/>
+  <arg name="goal_blocked_confirm_updates" default="10"/>
+  <arg name="goal_reached_distance_m" default="0.5"/>
+  <arg name="goal_progress_epsilon_m" default="0.25"/>
+  <arg name="goal_stall_timeout_s" default="15.0"/>
+  <arg name="failed_goal_exclusion_radius_m" default="1.0"/>
+  <arg name="failed_goal_cooldown_s" default="30.0"/>
+  <arg name="max_input_stamp_skew_s" default="0.2"/>
 
   <param name="/use_sim_time" value="$(arg use_sim_time)"/>
   <node pkg="daib_explorer"
@@ -9,5 +29,42 @@
         output="screen"
         respawn="false">
     <rosparam command="load" file="$(arg config)"/>
+    <param name="topics/odom" value="$(arg odom_topic)" type="string"/>
+    <param name="topics/cloud" value="$(arg cloud_topic)" type="string"/>
+    <param name="pvbsm_memory_enabled"
+           value="$(arg pvbsm_memory_enabled)" type="bool"/>
+    <param name="pvbsm_scoring_enabled"
+           value="$(arg pvbsm_scoring_enabled)" type="bool"/>
+    <param name="min_goal_distance_m"
+           value="$(arg min_goal_distance_m)" type="double"/>
+    <param name="max_goal_distance_m"
+           value="$(arg max_goal_distance_m)" type="double"/>
+    <param name="max_goal_vertical_distance_m"
+           value="$(arg max_goal_vertical_distance_m)" type="double"/>
+    <param name="min_known_free_path_ratio"
+           value="$(arg min_known_free_path_ratio)" type="double"/>
+    <param name="viewpoint_standoff_m"
+           value="$(arg viewpoint_standoff_m)" type="double"/>
+    <param name="min_wall_clearance_m"
+           value="$(arg min_wall_clearance_m)" type="double"/>
+    <param name="max_heading_change_deg"
+           value="$(arg max_heading_change_deg)" type="double"/>
+    <param name="allow_periodic_goal_switch"
+           value="$(arg allow_periodic_goal_switch)" type="bool"/>
+    <param name="goal_timeout_s" value="$(arg goal_timeout_s)" type="double"/>
+    <param name="goal_blocked_confirm_updates"
+           value="$(arg goal_blocked_confirm_updates)" type="int"/>
+    <param name="goal_reached_distance_m"
+           value="$(arg goal_reached_distance_m)" type="double"/>
+    <param name="goal_progress_epsilon_m"
+           value="$(arg goal_progress_epsilon_m)" type="double"/>
+    <param name="goal_stall_timeout_s"
+           value="$(arg goal_stall_timeout_s)" type="double"/>
+    <param name="failed_goal_exclusion_radius_m"
+           value="$(arg failed_goal_exclusion_radius_m)" type="double"/>
+    <param name="failed_goal_cooldown_s"
+           value="$(arg failed_goal_cooldown_s)" type="double"/>
+    <param name="max_input_stamp_skew_s"
+           value="$(arg max_input_stamp_skew_s)" type="double"/>
   </node>
 </launch>

@@ -67,28 +67,34 @@ Acceptance criteria:
   and the same line reports `memory_source=pvbsm`;
 - the `cycles` log ratio approaches `10 map : 10 blocked-check : 2 frontier :
   1 goal : 1 memory` per second;
-- a valid goal has frame `camera_init` and lies near a frontier;
-- generation does not change during `goal_min_hold_time_s`;
+- the log reports fewer clusters than frontier voxels and at least one scored
+  candidate when a goal is available; rejection counters identify the exact
+  filter when candidates are absent;
+- a valid goal has frame `camera_init`, differs from the current UAV height by
+  no more than `max_goal_vertical_distance_m`, and stops short of its frontier
+  cluster when possible;
+- with `allow_periodic_goal_switch=false`, generation remains unchanged until
+  the goal is reached, persistently blocked or stalled;
 - one transient occupied update does not switch the goal;
 - a continuously blocked goal switches after
   `goal_blocked_confirm_updates`;
-- a timed-out identical goal refreshes internally without increasing
-  generation.
+- continued progress beyond 45 s does not switch the goal merely because of
+  age; `goal_timeout_s` remains zero in the normal configuration;
+- no progress of at least `goal_progress_epsilon_m` for
+  `goal_stall_timeout_s` triggers replacement;
+- a blocked or stalled target cannot be selected again within
+  `failed_goal_exclusion_radius_m` until `failed_goal_cooldown_s` expires;
 - the status log reports non-zero `pvbsm=... scored`; candidates in unseen
   submaps contribute a positive `pvbsm_best_adjustment`;
 - replaying a previously mapped region reduces or makes the PVBSM adjustment
   negative instead of repeatedly rewarding the same frontier.
 - every valid goal is in a known-free voxel and has at least
   `min_wall_clearance_m` from occupied voxel centers;
-- normal logs report non-zero `mcsvf=... clusters/... viewpoints`, and goals
-  obey the configured 60/120 degree heading tiers plus indoor/outdoor height
-  and climb limits;
-- a maze replay may increase `reachability_checks`, but
-  `reachability_budget_exhaustions` should stay rare and the 1 Hz plan time
-  must remain within the board budget;
-- repeated local goals with little odometry displacement eventually publish
-  reason `loop_escape`; after `loop_escape_duration_s`, the state returns to
-  normal constraints.
+- normal logs report non-zero `frontier/... clusters/... candidates`; every
+  published goal is within 8 m and no more than 120 degrees from current yaw;
+- a maze replay may increase active-goal A* checks, but candidate evaluation
+  itself must not increase that counter. `reachability_budget_exhaustions`
+  should stay rare and the 1 Hz plan time must remain within the board budget.
 
 ## 3. Compute isolation
 

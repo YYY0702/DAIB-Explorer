@@ -274,27 +274,41 @@ private:
     private_nh_.param("goal_blocked_confirm_updates",
                       config.goal_blocked_confirm_updates,
                       config.goal_blocked_confirm_updates);
-    private_nh_.param("same_goal_tolerance_m",
-                      config.same_goal_tolerance_m,
-                      config.same_goal_tolerance_m);
     private_nh_.param(
         "goal_timeout_s", config.goal_timeout_s, config.goal_timeout_s);
     private_nh_.param("goal_reached_distance_m",
                       config.goal_reached_distance_m,
                       config.goal_reached_distance_m);
+    private_nh_.param("goal_progress_epsilon_m",
+                      config.goal_progress_epsilon_m,
+                      config.goal_progress_epsilon_m);
+    private_nh_.param("goal_stall_timeout_s",
+                      config.goal_stall_timeout_s,
+                      config.goal_stall_timeout_s);
+    private_nh_.param("failed_goal_exclusion_radius_m",
+                      config.failed_goal_exclusion_radius_m,
+                      config.failed_goal_exclusion_radius_m);
+    private_nh_.param("failed_goal_cooldown_s",
+                      config.failed_goal_cooldown_s,
+                      config.failed_goal_cooldown_s);
+    private_nh_.param("allow_periodic_goal_switch",
+                      config.allow_periodic_goal_switch,
+                      config.allow_periodic_goal_switch);
     private_nh_.param("min_goal_distance_m",
                       config.min_goal_distance_m,
                       config.min_goal_distance_m);
     private_nh_.param("max_goal_distance_m",
                       config.max_goal_distance_m,
                       config.max_goal_distance_m);
+    private_nh_.param("min_known_free_path_ratio",
+                      config.min_known_free_path_ratio,
+                      config.min_known_free_path_ratio);
     private_nh_.param("max_goal_vertical_distance_m",
                       config.max_goal_vertical_distance_m,
                       config.max_goal_vertical_distance_m);
     private_nh_.param("goal_switch_margin",
                       config.goal_switch_margin,
                       config.goal_switch_margin);
-    private_nh_.param("scene_mode", config.scene_mode, config.scene_mode);
     private_nh_.param("frontier_cluster_size_m",
                       config.frontier_cluster_size_m,
                       config.frontier_cluster_size_m);
@@ -313,57 +327,27 @@ private:
     private_nh_.param("max_safe_viewpoint_candidates",
                       config.max_safe_viewpoint_candidates,
                       config.max_safe_viewpoint_candidates);
-    private_nh_.param("preferred_min_goal_distance_m",
-                      config.preferred_min_goal_distance_m,
-                      config.preferred_min_goal_distance_m);
     private_nh_.param("preferred_heading_change_deg",
                       config.preferred_heading_change_deg,
                       config.preferred_heading_change_deg);
-    private_nh_.param("fallback_heading_change_deg",
-                      config.fallback_heading_change_deg,
-                      config.fallback_heading_change_deg);
-    private_nh_.param("indoor_max_vertical_distance_m",
-                      config.indoor_max_vertical_distance_m,
-                      config.indoor_max_vertical_distance_m);
-    private_nh_.param("outdoor_max_vertical_distance_m",
-                      config.outdoor_max_vertical_distance_m,
-                      config.outdoor_max_vertical_distance_m);
-    private_nh_.param("indoor_max_climb_angle_deg",
-                      config.indoor_max_climb_angle_deg,
-                      config.indoor_max_climb_angle_deg);
-    private_nh_.param("outdoor_max_climb_angle_deg",
-                      config.outdoor_max_climb_angle_deg,
-                      config.outdoor_max_climb_angle_deg);
+    private_nh_.param("max_heading_change_deg",
+                      config.max_heading_change_deg,
+                      config.max_heading_change_deg);
+    private_nh_.param("distance_cost_weight",
+                      config.distance_cost_weight,
+                      config.distance_cost_weight);
+    private_nh_.param("heading_cost_weight",
+                      config.heading_cost_weight,
+                      config.heading_cost_weight);
     private_nh_.param("reachability_enabled",
                       config.reachability_enabled,
                       config.reachability_enabled);
     private_nh_.param("reachability_max_expansions",
                       config.reachability_max_expansions,
                       config.reachability_max_expansions);
-    private_nh_.param("max_reachability_checks_per_cycle",
-                      config.max_reachability_checks_per_cycle,
-                      config.max_reachability_checks_per_cycle);
     private_nh_.param("goal_reachability_check_rate_hz",
                       config.goal_reachability_check_rate_hz,
                       config.goal_reachability_check_rate_hz);
-    private_nh_.param("loop_escape_enabled",
-                      config.loop_escape_enabled,
-                      config.loop_escape_enabled);
-    private_nh_.param("loop_history_window_s",
-                      config.loop_history_window_s,
-                      config.loop_history_window_s);
-    private_nh_.param("loop_repeat_threshold",
-                      config.loop_repeat_threshold,
-                      config.loop_repeat_threshold);
-    private_nh_.param("loop_cluster_radius_m",
-                      config.loop_cluster_radius_m,
-                      config.loop_cluster_radius_m);
-    private_nh_.param("loop_max_displacement_m",
-                      config.loop_max_displacement_m,
-                      config.loop_max_displacement_m);
-    private_nh_.param("loop_escape_duration_s",
-                      config.loop_escape_duration_s,
-                      config.loop_escape_duration_s);
     private_nh_.param("dynamic_budget_enabled",
                       config.dynamic_budget_enabled,
                       config.dynamic_budget_enabled);
@@ -415,6 +399,13 @@ private:
     private_nh_.param("pvbsm_degenerate_structure_bonus",
                       config.pvbsm_degenerate_structure_bonus,
                       config.pvbsm_degenerate_structure_bonus);
+    if (config.goal_timeout_s > 0.0)
+    {
+      ROS_WARN_STREAM(
+          "[ DAIB Explorer ] goal_timeout_s is deprecated and disables "
+          "progress-based stall replacement; set it to 0 for the default "
+          "goal_progress_epsilon_m/goal_stall_timeout_s policy");
+    }
   }
 
   void odomCallback(const nav_msgs::OdometryConstPtr &message)
@@ -802,7 +793,15 @@ private:
     ROS_INFO_STREAM_THROTTLE(
         1.0, "[ DAIB Explorer ] map=" << stats.free_cells << " free/"
         << stats.occupied_cells << " occupied/" << stats.frontier_cells
-        << " frontier, visited=" << stats.visited_cells
+        << " frontier/" << stats.frontier_clusters << " clusters/"
+        << stats.candidates_scored << " candidates, reject="
+        << stats.rejected_no_viewpoint << " no_viewpoint/"
+        << stats.rejected_distance << " distance/"
+        << stats.rejected_vertical_distance << " vertical/"
+        << stats.rejected_heading << " heading/"
+        << stats.rejected_known_free_path << " known_path/"
+        << stats.rejected_failed_goal << " failed_goal"
+        << ", visited=" << stats.visited_cells
         // Compatibility aliases: existing log parsers can keep consuming
         // observed/submaps, but both now come from the single PVBSM memory.
         << ", observed=" << pvbsm_root_count
@@ -824,13 +823,11 @@ private:
         << stats.pvbsm_unseen_candidates << " unseen"
         << ", pvbsm_best_adjustment="
         << stats.pvbsm_best_adjustment
-        << ", mcsvf=" << stats.frontier_clusters << " clusters/"
-        << stats.safe_viewpoint_candidates << " viewpoints/"
-        << stats.reachability_checks << " reachability_checks/"
+        << ", mcsvf=" << stats.safe_viewpoint_candidates << " viewpoints/"
+        << stats.reachability_checks << " active_goal_astar_checks/"
         << stats.reachability_budget_exhaustions << " exhausted"
-        << ", loop_escape="
-        << (stats.loop_escape_active ? "active" : "normal")
-        << "/" << stats.loop_escape_activations << " activations");
+        << ", stalled=" << stats.stalled_goals
+        << ", failed_cooldown=" << stats.failed_goals_in_cooldown);
   }
 };
 

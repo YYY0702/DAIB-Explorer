@@ -29,6 +29,8 @@ TEST(ExplorerCore, BuildsFrontiersAndSelectsGoal)
   ASSERT_TRUE(explorer.consumeDecision(decision));
   EXPECT_TRUE(decision.valid);
   EXPECT_EQ(decision.generation, 1U);
+  EXPECT_GT(explorer.stats().candidates_scored, 0U);
+  EXPECT_EQ(explorer.stats().reachability_checks, 0U);
 }
 
 TEST(ExplorerCore, ScalesBudgetFromLioRuntime)
@@ -79,13 +81,16 @@ TEST(ExplorerCore, MaintainsOnlyLightweightVisitMemory)
   EXPECT_EQ(explorer.stats().submap_count, 0U);
 }
 
-TEST(ExplorerCore, HoldsGoalAndSuppressesSameTimedOutGoal)
+TEST(ExplorerCore, KeepsAcceptedGoalWhileVehicleMakesProgress)
 {
   ExplorerConfig config;
   config.min_goal_distance_m = 1.0;
   config.max_goal_distance_m = 10.0;
-  config.goal_min_hold_time_s = 3.0;
-  config.goal_timeout_s = 5.0;
+  config.goal_min_hold_time_s = 1.0;
+  config.goal_timeout_s = 0.0;
+  config.goal_progress_epsilon_m = 0.25;
+  config.goal_stall_timeout_s = 15.0;
+  config.allow_periodic_goal_switch = false;
   ExplorerCore explorer(config);
   const std::vector<Vec3> points{{8.0, 0.0, 0.0}};
 
@@ -94,14 +99,164 @@ TEST(ExplorerCore, HoldsGoalAndSuppressesSameTimedOutGoal)
   ASSERT_TRUE(explorer.consumeDecision(initial));
   ASSERT_TRUE(initial.valid);
 
-  explorer.update({0.0, 0.0, 0.0}, {}, points, 2.0);
-  GoalDecision held;
-  EXPECT_FALSE(explorer.consumeDecision(held));
+  GoalDecision replacement;
+  for (int step = 1; step <= 5; ++step)
+  {
+    explorer.update({0.3 * step, 0.0, 0.0}, {}, points,
+                    1.0 + 11.0 * step);
+    EXPECT_FALSE(explorer.consumeDecision(replacement));
+  }
+  EXPECT_EQ(explorer.stats().stalled_goals, 0U);
+}
 
-  explorer.update({0.0, 0.0, 0.0}, {}, {}, 7.0);
-  GoalDecision republished;
-  EXPECT_FALSE(explorer.consumeDecision(republished));
-  EXPECT_EQ(explorer.stats().suppressed_goal_republishes, 1U);
+TEST(ExplorerCore, StalledGoalEntersCooldownBeforeSameAreaCanReturn)
+{
+  ExplorerConfig config;
+  config.min_goal_distance_m = 1.0;
+  config.max_goal_distance_m = 4.0;
+  config.goal_min_hold_time_s = 0.0;
+  config.goal_timeout_s = 0.0;
+  config.goal_progress_epsilon_m = 0.25;
+  config.goal_stall_timeout_s = 15.0;
+  config.failed_goal_exclusion_radius_m = 2.0;
+  config.failed_goal_cooldown_s = 30.0;
+  ExplorerCore explorer(config);
+  const std::vector<Vec3> points{{8.0, 0.0, 0.0}};
+
+  explorer.update({0.0, 0.0, 0.0}, {}, points, 1.0);
+  GoalDecision initial;
+  ASSERT_TRUE(explorer.consumeDecision(initial));
+  ASSERT_TRUE(initial.valid);
+
+  explorer.update({0.0, 0.0, 0.0}, {}, points, 17.0);
+  GoalDecision stalled;
+  ASSERT_TRUE(explorer.consumeDecision(stalled));
+  EXPECT_FALSE(stalled.valid);
+  EXPECT_EQ(stalled.state, "WAIT_FOR_FRONTIER");
+  EXPECT_EQ(stalled.reason, "goal_stalled_no_safe_frontier");
+  EXPECT_EQ(explorer.stats().stalled_goals, 1U);
+  EXPECT_EQ(explorer.stats().failed_goals_in_cooldown, 1U);
+
+  explorer.update({0.0, 0.0, 0.0}, {}, points, 30.0);
+  GoalDecision cooling;
+  EXPECT_FALSE(explorer.consumeDecision(cooling));
+
+  explorer.update({0.0, 0.0, 0.0}, {}, points, 48.0);
+  GoalDecision retried;
+  ASSERT_TRUE(explorer.consumeDecision(retried));
+  EXPECT_TRUE(retried.valid);
+  EXPECT_EQ(explorer.stats().failed_goals_in_cooldown, 0U);
+}
+
+TEST(ExplorerCore, KeepsAcceptedGoalWhenPeriodicSwitchingIsDisabled)
+{
+  ExplorerConfig config;
+  config.min_goal_distance_m = 1.0;
+  config.max_goal_distance_m = 10.0;
+  config.goal_min_hold_time_s = 1.0;
+  config.allow_periodic_goal_switch = false;
+  ExplorerCore explorer(config);
+
+  explorer.update({0.0, 0.0, 0.0}, {}, {{8.0, 0.0, 0.0}}, 1.0);
+  GoalDecision initial;
+  ASSERT_TRUE(explorer.consumeDecision(initial));
+  ASSERT_TRUE(initial.valid);
+
+  explorer.update(
+      {0.0, 0.0, 0.0}, {},
+      {{8.0, 0.0, 0.0}, {0.0, 8.0, 0.0}}, 5.0);
+  GoalDecision replacement;
+  EXPECT_FALSE(explorer.consumeDecision(replacement));
+}
+
+TEST(ExplorerCore, ReachedGoalAllowsNextGeneration)
+{
+  ExplorerConfig config;
+  config.min_goal_distance_m = 1.0;
+  config.max_goal_distance_m = 10.0;
+  ExplorerCore explorer(config);
+
+  explorer.update({0.0, 0.0, 0.0}, {}, {{8.0, 0.0, 0.0}}, 1.0);
+  GoalDecision first;
+  ASSERT_TRUE(explorer.consumeDecision(first));
+  ASSERT_TRUE(first.valid);
+
+  explorer.update(first.position, {},
+                  {{first.position.x + 8.0,
+                    first.position.y,
+                    first.position.z}},
+                  2.0);
+  GoalDecision second;
+  ASSERT_TRUE(explorer.consumeDecision(second));
+  ASSERT_TRUE(second.valid);
+  EXPECT_EQ(second.generation, 2U);
+}
+
+TEST(ExplorerCore, AcceptsSingleVoxelClusterAndStandoffFallback)
+{
+  ExplorerConfig config;
+  config.min_goal_distance_m = 1.0;
+  config.max_goal_distance_m = 10.0;
+  config.min_frontier_cluster_cells = 1;
+  config.viewpoint_standoff_m = 10.0;
+  config.viewpoint_search_radius_m = 0.5;
+  config.min_wall_clearance_m = 0.0;
+  ExplorerCore explorer(config);
+
+  explorer.update({0.0, 0.0, 0.0}, {}, {{8.0, 0.0, 0.0}}, 1.0);
+  EXPECT_GT(explorer.stats().frontier_clusters, 0U);
+  EXPECT_GT(explorer.stats().safe_viewpoint_candidates, 0U);
+  GoalDecision decision;
+  ASSERT_TRUE(explorer.consumeDecision(decision));
+  EXPECT_TRUE(decision.valid);
+}
+
+TEST(ExplorerCore, EnforcesFinalDistanceAndHeadingBounds)
+{
+  ExplorerConfig config;
+  config.min_goal_distance_m = 1.0;
+  config.max_goal_distance_m = 8.0;
+  config.max_heading_change_deg = 120.0;
+  ExplorerCore bounded(config);
+  bounded.update({0.0, 0.0, 0.0}, {}, {{12.0, 0.0, 0.0}}, 1.0);
+  GoalDecision bounded_goal;
+  ASSERT_TRUE(bounded.consumeDecision(bounded_goal));
+  ASSERT_TRUE(bounded_goal.valid);
+  EXPECT_LE(std::sqrt(bounded_goal.position.x * bounded_goal.position.x +
+                      bounded_goal.position.y * bounded_goal.position.y +
+                      bounded_goal.position.z * bounded_goal.position.z),
+            config.max_goal_distance_m);
+
+  ExplorerCore reverse(config);
+  reverse.update({0.0, 0.0, 0.0}, {}, {{-8.0, 0.0, 0.0}}, 1.0);
+  GoalDecision heading_rejected;
+  ASSERT_TRUE(reverse.consumeDecision(heading_rejected));
+  EXPECT_FALSE(heading_rejected.valid);
+  EXPECT_GT(reverse.stats().rejected_heading, 0U);
+
+}
+
+TEST(ExplorerCore, UsesSymmetricRelativeVerticalBound)
+{
+  ExplorerConfig config;
+  config.min_goal_distance_m = 1.0;
+  config.max_goal_distance_m = 10.0;
+  config.max_goal_vertical_distance_m = 3.0;
+
+  ExplorerCore above(config);
+  const Vec3 high_position{0.0, 0.0, 10.0};
+  above.update(high_position, {}, {{8.0, 0.0, 12.0}}, 1.0);
+  GoalDecision high_goal;
+  ASSERT_TRUE(above.consumeDecision(high_goal));
+  ASSERT_TRUE(high_goal.valid);
+  EXPECT_LE(std::fabs(high_goal.position.z - high_position.z), 3.0);
+
+  ExplorerCore below(config);
+  below.update(high_position, {}, {{8.0, 0.0, 8.0}}, 1.0);
+  GoalDecision low_goal;
+  ASSERT_TRUE(below.consumeDecision(low_goal));
+  ASSERT_TRUE(low_goal.valid);
+  EXPECT_LE(std::fabs(low_goal.position.z - high_position.z), 3.0);
 }
 
 TEST(ExplorerCore, RequiresConsecutiveObstacleConfirmation)
@@ -200,7 +355,7 @@ TEST(ExplorerCore, ClearsStaleOccupancyAtCurrentVehicleVoxel)
   EXPECT_EQ(explorer.stats().occupied_cells, 0U);
 }
 
-TEST(ExplorerCore, AppliesHeadingTiersBeforeFrontierScore)
+TEST(ExplorerCore, RejectsGoalsBeyondMaximumHeadingChange)
 {
   ExplorerConfig config;
   config.min_goal_distance_m = 1.0;

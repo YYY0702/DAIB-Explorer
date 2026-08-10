@@ -31,13 +31,25 @@ lower frontier rate does not discard occupancy changes.
 
 Goal selection uses DAIB-MCSVF (Motion-Constrained Safe-Viewpoint Frontier):
 raw frontier voxels are grouped into 2 m local clusters, one observation pose
-is searched in known free space for each cluster, and wall clearance,
-scene-specific height/climb, heading and bounded reachability are applied as
-hard filters before the existing DAIB/PVBSM information score. The normal
-tiers prefer goals at least 4 m away within 60 degrees, then allow a nearer
-goal and finally up to 120 degrees. A 120--180 degree tier is available only
-during detected local-loop escape. This keeps ordinary flight smooth without
-making a real maze exit permanently unreachable.
+is searched in known free space for each cluster, and a free frontier voxel is
+used as a conservative fallback when sparse rays cannot support the ideal
+standoff pose. The candidate layer retains only the required clearance,
+distance, relative-height, known-free-ratio and 120-degree safety bounds.
+Inside those bounds, information and PVBSM novelty are balanced against
+continuous distance and heading costs instead of hard preference tiers.
+
+Vertical motion is limited relative to the current UAV pose rather than a
+fixed map altitude: with the default `max_goal_vertical_distance_m: 3.0`, a
+candidate must satisfy `current_z - 3 m <= goal_z <= current_z + 3 m`. Explorer
+does not impose an absolute altitude layer or a task-area geofence.
+
+The accepted goal follows a persistent FUEL-style task policy: it is not
+replaced merely because a higher-scoring frontier appears. Replacement occurs
+only after arrival, persistently blocked active-goal reachability, or 15 s
+without at least 0.25 m of progress. Blocked or stalled goals enter a 30 s
+spatial cooldown so replanning cannot immediately select the same failed area.
+The old absolute `goal_timeout_s` is retained only for compatibility and is
+disabled by default.
 
 ## ROS contract
 
@@ -56,7 +68,7 @@ Outputs:
 
 | Topic | Type | Consumer |
 |---|---|---|
-| `/daib_explorer/goal` | `geometry_msgs/PoseStamped` | EGO-Swarm adapter; timestamp and pose identify the goal |
+| `/daib_explorer/goal` | `geometry_msgs/PoseStamped` | EGO-Swarm bridge; timestamp and pose identify the goal |
 | `/daib_explorer/frontiers` | `sensor_msgs/PointCloud2` | RViz / validation |
 | `/daib_explorer/planning_cloud` | `sensor_msgs/PointCloud2` | Rolling occupied-voxel centers for local planning |
 | `/daib_explorer/ready` | `std_msgs/Bool` | Planner watchdog; latched state plus 1 Hz heartbeat |
@@ -93,9 +105,9 @@ publishes both in `camera_init`; a mismatch is rejected instead of silently
 planning in mixed coordinate frames.
 
 `/daib_explorer/generation` is the application-level goal generation used for
-monitoring and acknowledgement. ROS1 owns `PoseStamped.header.seq`, so planner
-adapters must not use that transport field as the DAIB generation. The EGO
-adapter identifies duplicate goals by timestamp and pose and consumes the
+monitoring and acknowledgement. ROS1 owns `PoseStamped.header.seq`, so the
+planning bridge must not use that transport field as the DAIB generation. The
+bridge identifies duplicate goals by timestamp and pose and consumes the
 separate generation topic for telemetry.
 
 ## Build and run
@@ -120,7 +132,7 @@ pre-EGO acceptance test.
 ## Safety boundary
 
 The published goal is a task-level destination, not a dynamically feasible
-trajectory. Do not connect it directly to PX4. Use the DAIB adapter and
+trajectory. Do not connect it directly to PX4. Use the DAIB planning bridge and
 resource-constrained launch in `ego-planner-swarmYYY` to validate the goal,
 consume the local occupied cloud and generate a collision-free B-spline.
 The resulting `PositionCommand` is still a controller-facing interface rather

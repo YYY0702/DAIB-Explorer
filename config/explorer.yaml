@@ -50,8 +50,8 @@ pvbsm_submap_coverage_penalty: 2.0
 pvbsm_observed_root_penalty: 1.5
 pvbsm_degenerate_structure_bonus: 0.75
 
-# High-frequency rolling occupancy map used by frontier selection and later by
-# an EGO-Swarm adapter. It is intentionally independent of the SLAM map.
+# High-frequency rolling occupancy map used by frontier selection and the
+# EGO-Swarm planning bridge. It is intentionally independent of the SLAM map.
 planning_voxel_size_m: 0.5
 planning_sensor_range_m: 20.0
 planning_map_radius_m: 40.0
@@ -72,52 +72,48 @@ long_term_update_rate_hz: 1.0
 coverage_voxel_size_m: 2.0
 
 replan_interval_s: 1.0
-goal_min_hold_time_s: 3.0
-# Count accepted map updates (3 updates at 10 Hz is about 0.3 s).
-goal_blocked_confirm_updates: 3
-same_goal_tolerance_m: 0.5
-goal_timeout_s: 12.0
-goal_reached_distance_m: 1.0
-min_goal_distance_m: 2.0
-max_goal_distance_m: 15.0
+goal_min_hold_time_s: 5.0
+# Hold an accepted goal until reached, persistently blocked or stalled.
+allow_periodic_goal_switch: false
+# Count accepted map updates (10 updates at 10 Hz is about 1.0 s).
+goal_blocked_confirm_updates: 10
+# Deprecated compatibility switch. Zero disables absolute expiry; do not use
+# it together with the progress-based stall policy below.
+goal_timeout_s: 0.0
+goal_reached_distance_m: 0.5
+goal_progress_epsilon_m: 0.25
+goal_stall_timeout_s: 15.0
+failed_goal_exclusion_radius_m: 1.0
+failed_goal_cooldown_s: 30.0
+min_goal_distance_m: 1.5
+max_goal_distance_m: 8.0
+# Symmetric relative-height bound around the current UAV position:
+# current_z - 3 m <= goal_z <= current_z + 3 m.
 max_goal_vertical_distance_m: 3.0
+# Sparse ray maps need not prove that every voxel on the task-level route is
+# known free; EGO performs local collision-free trajectory planning.
+min_known_free_path_ratio: 0.5
 goal_switch_margin: 0.15
 
 # DAIB-MCSVF: first reduce raw frontier voxels into local clusters, then place
-# one goal in known free space behind each boundary. These are hard filters,
-# not extra score terms, so unsafe wall-adjacent and abrupt-turn goals cannot
-# win merely because their information score is high.
-scene_mode: indoor                  # indoor / outdoor, manual switch
+# one goal in known free space behind each boundary. Candidate production is
+# deliberately permissive; only flight safety envelopes remain hard filters.
 frontier_cluster_size_m: 2.0
-min_frontier_cluster_cells: 3
+min_frontier_cluster_cells: 1
 viewpoint_standoff_m: 1.0
-viewpoint_search_radius_m: 1.5
-min_wall_clearance_m: 0.75
+viewpoint_search_radius_m: 2.0
+min_wall_clearance_m: 0.5
 max_safe_viewpoint_candidates: 64
-preferred_min_goal_distance_m: 4.0
 preferred_heading_change_deg: 60.0
-fallback_heading_change_deg: 120.0
-indoor_max_vertical_distance_m: 0.8
-outdoor_max_vertical_distance_m: 1.5
-indoor_max_climb_angle_deg: 15.0
-outdoor_max_climb_angle_deg: 20.0
+max_heading_change_deg: 120.0
+distance_cost_weight: 0.5
+heading_cost_weight: 3.0
 
-# Straight unobstructed goals skip A*. Around corners, a bounded known-free
-# search prevents the old line-of-sight test from rejecting maze exits.
+# Bounded A* is used only to confirm whether the active goal is persistently
+# blocked. It is not run for every frontier candidate.
 reachability_enabled: true
 reachability_max_expansions: 2500
-max_reachability_checks_per_cycle: 12
 goal_reachability_check_rate_hz: 2.0
-
-# If the same coarse frontier is selected repeatedly while the aircraft makes
-# little net progress, temporarily blacklist recent clusters and allow the
-# final 120-180 degree escape tier. All safety constraints remain enabled.
-loop_escape_enabled: true
-loop_history_window_s: 30.0
-loop_repeat_threshold: 3
-loop_cluster_radius_m: 2.0
-loop_max_displacement_m: 4.0
-loop_escape_duration_s: 12.0
 
 # Joint compute budget: reduce exploration work while LIO is busy. This never
 # changes FAST-LIVO2 itself; it only consumes its runtime telemetry.

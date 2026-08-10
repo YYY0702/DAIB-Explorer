@@ -73,15 +73,22 @@ void ExplorerCore::sanitizeConfig()
       std::max(0.1, config_.long_term_update_rate_hz);
   config_.coverage_voxel_size_m = std::max(0.1, config_.coverage_voxel_size_m);
   config_.replan_interval_s = std::max(0.1, config_.replan_interval_s);
-  config_.goal_timeout_s =
-      std::max(config_.replan_interval_s, config_.goal_timeout_s);
+  config_.goal_timeout_s = std::max(0.0, config_.goal_timeout_s);
   config_.goal_min_hold_time_s =
-      clamp(config_.goal_min_hold_time_s, 0.0, config_.goal_timeout_s);
+      std::max(0.0, config_.goal_min_hold_time_s);
   config_.goal_blocked_confirm_updates =
       std::max(1, config_.goal_blocked_confirm_updates);
-  config_.same_goal_tolerance_m = std::max(0.0, config_.same_goal_tolerance_m);
   config_.goal_reached_distance_m =
       std::max(0.1, config_.goal_reached_distance_m);
+  config_.goal_progress_epsilon_m =
+      std::max(0.01, config_.goal_progress_epsilon_m);
+  config_.goal_stall_timeout_s =
+      std::max(0.1, config_.goal_stall_timeout_s);
+  config_.failed_goal_exclusion_radius_m =
+      std::max(config_.planning_voxel_size_m,
+               config_.failed_goal_exclusion_radius_m);
+  config_.failed_goal_cooldown_s =
+      std::max(0.1, config_.failed_goal_cooldown_s);
   config_.min_goal_distance_m =
       std::max(config_.goal_reached_distance_m, config_.min_goal_distance_m);
   config_.max_goal_distance_m =
@@ -89,9 +96,9 @@ void ExplorerCore::sanitizeConfig()
   config_.max_goal_vertical_distance_m =
       std::max(config_.planning_voxel_size_m,
                config_.max_goal_vertical_distance_m);
+  config_.min_known_free_path_ratio =
+      clamp(config_.min_known_free_path_ratio, 0.0, 1.0);
   config_.goal_switch_margin = clamp(config_.goal_switch_margin, 0.0, 1.0);
-  if (config_.scene_mode != "indoor" && config_.scene_mode != "outdoor")
-    config_.scene_mode = "indoor";
   config_.frontier_cluster_size_m =
       std::max(config_.planning_voxel_size_m,
                config_.frontier_cluster_size_m);
@@ -106,40 +113,17 @@ void ExplorerCore::sanitizeConfig()
       std::max(0.0, config_.min_wall_clearance_m);
   config_.max_safe_viewpoint_candidates =
       std::max(1, config_.max_safe_viewpoint_candidates);
-  config_.preferred_min_goal_distance_m =
-      clamp(config_.preferred_min_goal_distance_m,
-            config_.min_goal_distance_m, config_.max_goal_distance_m);
   config_.preferred_heading_change_deg =
       clamp(config_.preferred_heading_change_deg, 0.0, 180.0);
-  config_.fallback_heading_change_deg =
-      clamp(config_.fallback_heading_change_deg,
-            config_.preferred_heading_change_deg, 180.0);
-  config_.indoor_max_vertical_distance_m =
-      std::max(config_.planning_voxel_size_m,
-               config_.indoor_max_vertical_distance_m);
-  config_.outdoor_max_vertical_distance_m =
-      std::max(config_.planning_voxel_size_m,
-               config_.outdoor_max_vertical_distance_m);
-  config_.indoor_max_climb_angle_deg =
-      clamp(config_.indoor_max_climb_angle_deg, 0.0, 89.0);
-  config_.outdoor_max_climb_angle_deg =
-      clamp(config_.outdoor_max_climb_angle_deg, 0.0, 89.0);
+  config_.max_heading_change_deg =
+      clamp(config_.max_heading_change_deg,
+            std::max(1.0, config_.preferred_heading_change_deg), 180.0);
+  config_.distance_cost_weight = std::max(0.0, config_.distance_cost_weight);
+  config_.heading_cost_weight = std::max(0.0, config_.heading_cost_weight);
   config_.reachability_max_expansions =
       std::max(32, config_.reachability_max_expansions);
-  config_.max_reachability_checks_per_cycle =
-      std::max(1, config_.max_reachability_checks_per_cycle);
   config_.goal_reachability_check_rate_hz =
       std::max(0.1, config_.goal_reachability_check_rate_hz);
-  config_.loop_history_window_s =
-      std::max(1.0, config_.loop_history_window_s);
-  config_.loop_repeat_threshold = std::max(2, config_.loop_repeat_threshold);
-  config_.loop_cluster_radius_m =
-      std::max(config_.planning_voxel_size_m, config_.loop_cluster_radius_m);
-  config_.loop_max_displacement_m =
-      std::max(config_.planning_voxel_size_m,
-               config_.loop_max_displacement_m);
-  config_.loop_escape_duration_s =
-      std::max(1.0, config_.loop_escape_duration_s);
   config_.lio_busy_threshold_ms = std::max(1.0, config_.lio_busy_threshold_ms);
   config_.lio_overload_threshold_ms =
       std::max(config_.lio_busy_threshold_ms, config_.lio_overload_threshold_ms);
@@ -587,6 +571,32 @@ bool ExplorerCore::makeSafeViewpoint(const std::vector<VoxelKey> &cluster,
       }
     }
   }
+
+  // Sparse ray maps do not always contain the ideal standoff voxel. Fall
+  // back to a free frontier voxel in this cluster instead of dropping all of
+  // its information. Distance, heading and relative-height checks are still
+  // applied by updateDecision(), and occupied voxels are never returned.
+  std::vector<std::pair<double, VoxelKey>> fallback;
+  fallback.reserve(cluster.size());
+  for (const VoxelKey &voxel : cluster)
+  {
+    if (cellState(voxel) != 0 || !hasWallClearance(voxel)) continue;
+    fallback.emplace_back(
+        distance(center(voxel, config_.planning_voxel_size_m), desired),
+        voxel);
+  }
+  std::sort(fallback.begin(), fallback.end(),
+            [](const std::pair<double, VoxelKey> &left,
+               const std::pair<double, VoxelKey> &right)
+            {
+              return left.first < right.first;
+            });
+  if (!fallback.empty())
+  {
+    representative = fallback.front().second;
+    viewpoint = center(representative, config_.planning_voxel_size_m);
+    return true;
+  }
   return false;
 }
 
@@ -611,57 +621,54 @@ double ExplorerCore::headingChange(const Vec3 &position,
          180.0 / kPi;
 }
 
-bool ExplorerCore::loopDetected(const Vec3 &position, double timestamp)
+bool ExplorerCore::nearFailedGoal(const Vec3 &point) const
 {
-  while (!goal_history_.empty() &&
-         timestamp - goal_history_.front().timestamp >
-             config_.loop_history_window_s)
-    goal_history_.pop_front();
-  if (!config_.loop_escape_enabled ||
-      goal_history_.size() <
-          static_cast<std::size_t>(config_.loop_repeat_threshold))
-    return false;
-  struct ClusterHistory
+  for (const FailedGoal &failed : failed_goals_)
   {
-    int count = 0;
-    Vec3 first_vehicle_position;
-  };
-  std::unordered_map<VoxelKey, ClusterHistory, VoxelKeyHash> counts;
-  for (const GoalHistoryEntry &entry : goal_history_)
-  {
-    ClusterHistory &history = counts[entry.cluster];
-    if (history.count == 0)
-      history.first_vehicle_position = entry.vehicle_position;
-    ++history.count;
-  }
-  for (const auto &entry : counts)
-  {
-    if (entry.second.count >= config_.loop_repeat_threshold &&
-        distance(position, entry.second.first_vehicle_position) <=
-            config_.loop_max_displacement_m)
+    if (distance(point, failed.position) <=
+        config_.failed_goal_exclusion_radius_m)
       return true;
   }
   return false;
 }
 
-bool ExplorerCore::recentlySelectedCluster(const VoxelKey &cluster) const
+void ExplorerCore::pruneFailedGoals(double timestamp)
 {
-  for (const GoalHistoryEntry &entry : goal_history_)
+  failed_goals_.erase(
+      std::remove_if(failed_goals_.begin(), failed_goals_.end(),
+                     [timestamp](const FailedGoal &failed)
+                     {
+                       return failed.expires_at <= timestamp;
+                     }),
+      failed_goals_.end());
+  stats_.failed_goals_in_cooldown = failed_goals_.size();
+}
+
+void ExplorerCore::recordFailedGoal(double timestamp)
+{
+  if (!decision_.valid || decision_.generation == last_failed_generation_)
+    return;
+  failed_goals_.push_back(
+      {decision_.position, timestamp + config_.failed_goal_cooldown_s});
+  last_failed_generation_ = decision_.generation;
+  stats_.failed_goals_in_cooldown = failed_goals_.size();
+}
+
+void ExplorerCore::resetGoalProgress(const Vec3 &position, double timestamp)
+{
+  if (!decision_.valid)
   {
-    if (entry.cluster == cluster) return true;
+    best_goal_distance_m_ = std::numeric_limits<double>::infinity();
+    last_goal_progress_time_ = -1.0;
+    goal_stalled_ = false;
+    return;
   }
-  return false;
+  best_goal_distance_m_ = distance(decision_.position, position);
+  last_goal_progress_time_ = timestamp;
+  goal_stalled_ = false;
 }
 
-void ExplorerCore::rememberSelectedCluster(const VoxelKey &cluster,
-                                           const Vec3 &position,
-                                           double timestamp)
-{
-  goal_history_.push_back({cluster, position, timestamp});
-}
-
-double ExplorerCore::frontierScore(const VoxelKey &voxel,
-                                   const Vec3 &position) const
+double ExplorerCore::frontierScore(const VoxelKey &voxel) const
 {
   int unknown_neighbors = 0;
   int occupied_neighbors = 0;
@@ -682,8 +689,7 @@ double ExplorerCore::frontierScore(const VoxelKey &voxel,
           ? 1.0
           : clamp(1.0 - degeneracy_score_ / 0.08, 0.0, 1.0);
   return 1.5 * unknown_neighbors + 2.0 * novelty +
-         0.35 * weakness * occupied_neighbors -
-         0.25 * distance(point, position);
+         0.35 * weakness * occupied_neighbors;
 }
 
 double ExplorerCore::pvbsmScoreAdjustment(
@@ -713,16 +719,23 @@ void ExplorerCore::updateVisitMemory(const Vec3 &position)
 
 void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
 {
+  pruneFailedGoals(timestamp);
   const bool had_goal = decision_.valid;
+  const bool failed_active_goal =
+      had_goal && (goal_blocked_ || goal_stalled_ || goal_timeout_);
+  if (failed_active_goal) recordFailedGoal(timestamp);
+
   const bool hold =
       had_goal && goal_set_time_ >= 0.0 &&
       timestamp - goal_set_time_ < config_.goal_min_hold_time_s;
-  if (hold && !goal_reached_ && !goal_blocked_) return;
+  if (hold && !goal_reached_ && !failed_active_goal) return;
+  if (had_goal && !goal_reached_ && !failed_active_goal &&
+      !config_.allow_periodic_goal_switch)
+    return;
   const bool periodic =
       last_plan_time_ < 0.0 ||
       timestamp - last_plan_time_ >= config_.replan_interval_s;
-  if (had_goal && !goal_reached_ && !goal_blocked_ && !goal_timeout_ &&
-      !periodic)
+  if (had_goal && !goal_reached_ && !failed_active_goal && !periodic)
     return;
 
   const auto start = std::chrono::steady_clock::now();
@@ -733,27 +746,16 @@ void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
   const double max_distance =
       degenerate_ ? config_.degenerate_max_goal_distance_m
                   : config_.max_goal_distance_m;
-  const double max_vertical = std::min(
-      config_.max_goal_vertical_distance_m,
-      config_.scene_mode == "outdoor"
-          ? config_.outdoor_max_vertical_distance_m
-          : config_.indoor_max_vertical_distance_m);
-  const double max_climb_angle =
-      config_.scene_mode == "outdoor"
-          ? config_.outdoor_max_climb_angle_deg
-          : config_.indoor_max_climb_angle_deg;
-  const bool detected_loop = loopDetected(position, timestamp);
-  if (detected_loop && timestamp >= loop_escape_until_)
-  {
-    loop_escape_until_ = timestamp + config_.loop_escape_duration_s;
-    ++stats_.loop_escape_activations;
-  }
-  const bool escape_active = timestamp < loop_escape_until_;
-  stats_.loop_escape_active = escape_active;
+  stats_.rejected_no_viewpoint = 0;
+  stats_.rejected_distance = 0;
+  stats_.rejected_vertical_distance = 0;
+  stats_.rejected_heading = 0;
+  stats_.rejected_known_free_path = 0;
+  stats_.rejected_failed_goal = 0;
+  stats_.candidates_scored = 0;
   struct Candidate
   {
     VoxelKey voxel;
-    VoxelKey cluster;
     Vec3 point;
     double known_free = 0.0;
     double distance = 0.0;
@@ -795,7 +797,7 @@ void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
     const int approximate_tier =
         approximate_heading <= config_.preferred_heading_change_deg
             ? 0
-            : approximate_heading <= config_.fallback_heading_change_deg
+            : approximate_heading <= config_.max_heading_change_deg
                   ? 1
                   : 2;
     ordered_clusters.push_back({&cluster, approximate_tier, stable_key});
@@ -814,7 +816,6 @@ void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
           return left.stable_key.y < right.stable_key.y;
         return left.stable_key.z < right.stable_key.z;
       });
-  int reachability_checks = 0;
   int evaluated = 0;
   const int viewpoint_budget = std::max(
       1, static_cast<int>(std::lround(
@@ -827,55 +828,45 @@ void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
     Vec3 candidate;
     VoxelKey representative;
     if (!makeSafeViewpoint(frontier_cluster, candidate, representative))
-      continue;
-    const double candidate_distance = distance(candidate, position);
-    const double horizontal_distance = std::hypot(
-        candidate.x - position.x, candidate.y - position.y);
-    const double climb_angle = std::atan2(
-        std::fabs(candidate.z - position.z),
-        std::max(config_.planning_voxel_size_m, horizontal_distance)) *
-        180.0 / 3.14159265358979323846;
-    if (candidate_distance < config_.min_goal_distance_m ||
-        candidate_distance > max_distance ||
-        std::fabs(candidate.z - position.z) > max_vertical ||
-        climb_angle > max_climb_angle)
-      continue;
-    double known_free = 0.0;
-    const bool direct_blocked =
-        segmentBlocked(position, candidate, &known_free);
-    if (direct_blocked)
     {
-      if (!config_.reachability_enabled ||
-          reachability_checks >= config_.max_reachability_checks_per_cycle)
-        continue;
-      bool exhausted = false;
-      ++reachability_checks;
-      ++stats_.reachability_checks;
-      const int expansion_budget = std::max(
-          32, static_cast<int>(std::lround(
-                  config_.reachability_max_expansions * stats_.budget_scale)));
-      if (!pathReachable(position, candidate, expansion_budget, &exhausted))
-      {
-        if (exhausted) ++stats_.reachability_budget_exhaustions;
-        continue;
-      }
+      ++stats_.rejected_no_viewpoint;
+      continue;
+    }
+    const double candidate_distance = distance(candidate, position);
+    if (candidate_distance < config_.min_goal_distance_m ||
+        candidate_distance > max_distance)
+    {
+      ++stats_.rejected_distance;
+      continue;
+    }
+    if (std::fabs(candidate.z - position.z) >
+        config_.max_goal_vertical_distance_m)
+    {
+      ++stats_.rejected_vertical_distance;
+      continue;
     }
     const double heading = headingChange(position, candidate);
-    int tier = 3;
-    if (candidate_distance >= config_.preferred_min_goal_distance_m &&
-        heading <= config_.preferred_heading_change_deg)
-      tier = 0;
-    else if (heading <= config_.preferred_heading_change_deg)
-      tier = 1;
-    else if (heading <= config_.fallback_heading_change_deg)
-      tier = 2;
-    else if (!escape_active)
+    if (heading > config_.max_heading_change_deg)
+    {
+      ++stats_.rejected_heading;
       continue;
-    const Vec3 representative_point =
-        center(representative, config_.planning_voxel_size_m);
+    }
+    if (nearFailedGoal(candidate))
+    {
+      ++stats_.rejected_failed_goal;
+      continue;
+    }
+    double known_free = 0.0;
+    segmentBlocked(position, candidate, &known_free);
+    if (known_free + 1e-9 < config_.min_known_free_path_ratio)
+    {
+      ++stats_.rejected_known_free_path;
+      continue;
+    }
+    const int tier =
+        heading <= config_.preferred_heading_change_deg ? 0 : 1;
     candidates.push_back(
         {representative,
-         key(representative_point, config_.loop_cluster_radius_m),
          candidate,
          known_free,
          candidate_distance,
@@ -917,36 +908,12 @@ void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
   stats_.pvbsm_best_adjustment = 0.0;
   double best_score = -std::numeric_limits<double>::infinity();
   Vec3 best;
-  VoxelKey best_cluster;
   double best_heading_change = 0.0;
   bool found = false;
-  int selected_tier = 4;
-  bool have_fresh_cluster = false;
-  if (escape_active)
-  {
-    for (const Candidate &candidate : candidates)
-    {
-      if (!recentlySelectedCluster(candidate.cluster))
-      {
-        have_fresh_cluster = true;
-        break;
-      }
-    }
-  }
-  for (const Candidate &candidate : candidates)
-  {
-    if (escape_active && have_fresh_cluster &&
-        recentlySelectedCluster(candidate.cluster))
-      continue;
-    selected_tier = std::min(selected_tier, candidate.tier);
-  }
+  int selected_tier = -1;
   for (std::size_t index = 0; index < candidates.size(); ++index)
   {
     const Candidate &candidate = candidates[index];
-    if (candidate.tier != selected_tier) continue;
-    if (escape_active && have_fresh_cluster &&
-        recentlySelectedCluster(candidate.cluster))
-      continue;
     double pvbsm_adjustment = 0.0;
     if (!pvbsm_hints.empty())
     {
@@ -955,17 +922,21 @@ void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
         ++stats_.pvbsm_unseen_candidates;
     }
     const double score =
-        frontierScore(candidate.voxel, position) +
+        frontierScore(candidate.voxel) +
         (degenerate_
              ? config_.degenerate_safe_path_weight * candidate.known_free
              : 0.0) +
-        pvbsm_adjustment;
+        pvbsm_adjustment -
+        config_.distance_cost_weight * candidate.distance -
+        config_.heading_cost_weight * candidate.heading_change_deg /
+            config_.max_heading_change_deg;
+    ++stats_.candidates_scored;
     if (score > best_score)
     {
       best_score = score;
       best = candidate.point;
-      best_cluster = candidate.cluster;
       best_heading_change = candidate.heading_change_deg;
+      selected_tier = candidate.tier;
       found = true;
       stats_.pvbsm_best_adjustment = pvbsm_adjustment;
     }
@@ -977,7 +948,7 @@ void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
 
   if (!found)
   {
-    if (had_goal && !goal_reached_ && !goal_blocked_ && !goal_timeout_)
+    if (had_goal && !goal_reached_ && !failed_active_goal)
     {
       decision_.planning_time_ms = elapsed.count();
       return;
@@ -990,41 +961,34 @@ void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
         goal_reached_
             ? "goal_reached_no_next_frontier"
             : goal_blocked_ ? "goal_blocked_no_safe_frontier"
+            : goal_stalled_ ? "goal_stalled_no_safe_frontier"
+            : goal_timeout_ ? "goal_timeout_no_safe_frontier"
                             : "no_safe_frontier";
     decision_.planning_time_ms = elapsed.count();
     blocked_streak_ = 0;
+    goal_set_time_ = -1.0;
+    resetGoalProgress(position, timestamp);
     return;
   }
 
-  if (had_goal && goal_timeout_ && !goal_reached_ && !goal_blocked_ &&
-      distance(best, decision_.position) <= config_.same_goal_tolerance_m)
-  {
-    goal_set_time_ = timestamp;
-    decision_.score = best_score;
-    decision_.planning_time_ms = elapsed.count();
-    decision_.reason = "goal_timeout_same_goal";
-    ++stats_.suppressed_goal_republishes;
-    // A suppressed publication is still a repeated planning choice. Keep it
-    // in the loop detector so a vehicle stuck on one unchanged frontier can
-    // enter escape mode instead of refreshing that goal forever.
-    rememberSelectedCluster(best_cluster, position, timestamp);
-    return;
-  }
-
-  if (had_goal && !goal_reached_ && !goal_blocked_ && !goal_timeout_)
+  if (had_goal && !goal_reached_ && !failed_active_goal)
   {
     double current_known_free = 0.0;
     segmentBlocked(position, decision_.position, &current_known_free);
+    const double current_distance = distance(position, decision_.position);
+    const double current_heading = headingChange(position, decision_.position);
     const double current_score =
-        frontierScore(key(decision_.position, config_.planning_voxel_size_m),
-                      position) +
+        frontierScore(key(decision_.position, config_.planning_voxel_size_m)) +
         (degenerate_
              ? config_.degenerate_safe_path_weight * current_known_free
              : 0.0) +
         (current_goal_hint_index < pvbsm_hints.size()
              ? pvbsmScoreAdjustment(
                    pvbsm_hints[current_goal_hint_index])
-             : 0.0);
+             : 0.0) -
+        config_.distance_cost_weight * current_distance -
+        config_.heading_cost_weight * current_heading /
+            config_.max_heading_change_deg;
     const double margin =
         degenerate_ ? config_.degenerate_goal_switch_margin
                     : config_.goal_switch_margin;
@@ -1045,26 +1009,57 @@ void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
   decision_.constraint_tier = selected_tier;
   decision_.heading_change_deg = best_heading_change;
   decision_.state = degenerate_ ? "DEGRADED_EXPLORE" : "EXPLORE";
-  if (escape_active) decision_.reason = "loop_escape";
-  else if (!had_goal) decision_.reason = "initial_frontier";
+  if (!had_goal) decision_.reason = "initial_frontier";
   else if (goal_reached_) decision_.reason = "goal_reached";
   else if (goal_blocked_) decision_.reason = "new_obstacle";
+  else if (goal_stalled_) decision_.reason = "goal_stalled";
   else if (goal_timeout_) decision_.reason = "goal_timeout";
   else decision_.reason = "better_frontier";
   goal_set_time_ = timestamp;
   blocked_streak_ = 0;
   ++decision_.generation;
-  rememberSelectedCluster(best_cluster, position, timestamp);
+  last_goal_reachability_check_time_ = -1.0;
+  cached_goal_reachable_ = true;
+  resetGoalProgress(position, timestamp);
 }
 
 void ExplorerCore::updateGoalStatus(const Vec3 &position, double timestamp)
 {
   ++stats_.goal_status_checks;
   const bool had_goal = decision_.valid;
+  const double current_goal_distance =
+      had_goal ? distance(decision_.position, position)
+               : std::numeric_limits<double>::infinity();
   goal_reached_ =
       had_goal &&
-      distance(decision_.position, position) <=
-          config_.goal_reached_distance_m;
+      current_goal_distance <= config_.goal_reached_distance_m;
+
+  if (!had_goal)
+  {
+    resetGoalProgress(position, timestamp);
+  }
+  else if (last_goal_progress_time_ < 0.0 ||
+           timestamp < last_goal_progress_time_)
+  {
+    best_goal_distance_m_ = current_goal_distance;
+    last_goal_progress_time_ = timestamp;
+    goal_stalled_ = false;
+  }
+  else if (current_goal_distance <=
+           best_goal_distance_m_ - config_.goal_progress_epsilon_m)
+  {
+    best_goal_distance_m_ = current_goal_distance;
+    last_goal_progress_time_ = timestamp;
+    goal_stalled_ = false;
+  }
+
+  const bool was_stalled = goal_stalled_;
+  goal_stalled_ =
+      had_goal && !goal_reached_ && config_.goal_timeout_s <= 0.0 &&
+      last_goal_progress_time_ >= 0.0 &&
+      timestamp - last_goal_progress_time_ >= config_.goal_stall_timeout_s;
+  if (goal_stalled_ && !was_stalled) ++stats_.stalled_goals;
+
   const bool line_blocked =
       had_goal && segmentBlocked(position, decision_.position);
   if (!line_blocked)
@@ -1098,7 +1093,7 @@ void ExplorerCore::updateGoalStatus(const Vec3 &position, double timestamp)
       raw_blocked &&
       blocked_streak_ >= config_.goal_blocked_confirm_updates;
   goal_timeout_ =
-      had_goal && goal_set_time_ >= 0.0 &&
+      had_goal && config_.goal_timeout_s > 0.0 && goal_set_time_ >= 0.0 &&
       timestamp - goal_set_time_ >= config_.goal_timeout_s;
 }
 

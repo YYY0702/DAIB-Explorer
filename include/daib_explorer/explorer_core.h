@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <limits>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -63,49 +64,41 @@ struct ExplorerConfig
   double coverage_voxel_size_m = 2.0;
 
   double replan_interval_s = 1.0;
-  double goal_min_hold_time_s = 3.0;
-  int goal_blocked_confirm_updates = 3;
-  double same_goal_tolerance_m = 0.5;
-  double goal_timeout_s = 12.0;
-  double goal_reached_distance_m = 1.0;
-  double min_goal_distance_m = 2.0;
-  double max_goal_distance_m = 15.0;
+  double goal_min_hold_time_s = 5.0;
+  int goal_blocked_confirm_updates = 10;
+  // Deprecated compatibility timeout. Zero disables absolute goal expiry;
+  // progress-based stalling is the normal replacement policy.
+  double goal_timeout_s = 0.0;
+  double goal_reached_distance_m = 0.5;
+  double goal_progress_epsilon_m = 0.25;
+  double goal_stall_timeout_s = 15.0;
+  double failed_goal_exclusion_radius_m = 1.0;
+  double failed_goal_cooldown_s = 30.0;
+  bool allow_periodic_goal_switch = false;
+  double min_goal_distance_m = 1.5;
+  double max_goal_distance_m = 8.0;
   double max_goal_vertical_distance_m = 3.0;
+  double min_known_free_path_ratio = 0.5;
   double goal_switch_margin = 0.15;
 
   // DAIB-MCSVF: cluster raw frontier voxels, then place one safe viewpoint
   // in known free space for each cluster before doing the original scoring.
-  std::string scene_mode = "indoor";
   double frontier_cluster_size_m = 2.0;
-  int min_frontier_cluster_cells = 3;
+  int min_frontier_cluster_cells = 1;
   double viewpoint_standoff_m = 1.0;
-  double viewpoint_search_radius_m = 1.5;
-  double min_wall_clearance_m = 0.75;
+  double viewpoint_search_radius_m = 2.0;
+  double min_wall_clearance_m = 0.5;
   int max_safe_viewpoint_candidates = 64;
-  double preferred_min_goal_distance_m = 4.0;
   double preferred_heading_change_deg = 60.0;
-  double fallback_heading_change_deg = 120.0;
-  double indoor_max_vertical_distance_m = 0.8;
-  double outdoor_max_vertical_distance_m = 1.5;
-  double indoor_max_climb_angle_deg = 15.0;
-  double outdoor_max_climb_angle_deg = 20.0;
+  double max_heading_change_deg = 120.0;
+  double distance_cost_weight = 0.5;
+  double heading_cost_weight = 3.0;
 
   // Bounded reachability prevents straight-line visibility from rejecting a
   // valid goal around a corner. Direct free lines do not invoke A*.
   bool reachability_enabled = true;
   int reachability_max_expansions = 2500;
-  int max_reachability_checks_per_cycle = 12;
   double goal_reachability_check_rate_hz = 2.0;
-
-  // Detect repeated short-range goal selections while the vehicle makes
-  // little progress. Escape mode blacklists those recent clusters and relaxes
-  // only the heading tier; wall/height/reachability constraints stay active.
-  bool loop_escape_enabled = true;
-  double loop_history_window_s = 30.0;
-  int loop_repeat_threshold = 3;
-  double loop_cluster_radius_m = 2.0;
-  double loop_max_displacement_m = 4.0;
-  double loop_escape_duration_s = 12.0;
 
   bool dynamic_budget_enabled = true;
   double lio_busy_threshold_ms = 25.0;
@@ -160,7 +153,6 @@ struct ExplorerStats
   int effective_raycasts = 0;
   int effective_frontier_updates = 0;
   int effective_frontier_evaluations = 0;
-  uint64_t suppressed_goal_republishes = 0;
   uint64_t map_updates = 0;
   uint64_t goal_status_checks = 0;
   uint64_t frontier_update_cycles = 0;
@@ -171,10 +163,17 @@ struct ExplorerStats
   double pvbsm_best_adjustment = 0.0;
   std::size_t frontier_clusters = 0;
   std::size_t safe_viewpoint_candidates = 0;
+  std::size_t rejected_no_viewpoint = 0;
+  std::size_t rejected_distance = 0;
+  std::size_t rejected_vertical_distance = 0;
+  std::size_t rejected_heading = 0;
+  std::size_t rejected_known_free_path = 0;
+  std::size_t rejected_failed_goal = 0;
+  std::size_t candidates_scored = 0;
   uint64_t reachability_checks = 0;
   uint64_t reachability_budget_exhaustions = 0;
-  uint64_t loop_escape_activations = 0;
-  bool loop_escape_active = false;
+  uint64_t stalled_goals = 0;
+  std::size_t failed_goals_in_cooldown = 0;
 };
 
 class ExplorerCore
@@ -223,18 +222,20 @@ private:
   double last_long_term_update_time_ = -1.0;
   bool goal_reached_ = false;
   bool goal_blocked_ = false;
+  bool goal_stalled_ = false;
   bool goal_timeout_ = false;
   Quaternion current_orientation_;
   double last_goal_reachability_check_time_ = -1.0;
   bool cached_goal_reachable_ = true;
-  double loop_escape_until_ = -1.0;
-  struct GoalHistoryEntry
+  double best_goal_distance_m_ = std::numeric_limits<double>::infinity();
+  double last_goal_progress_time_ = -1.0;
+  uint64_t last_failed_generation_ = 0;
+  struct FailedGoal
   {
-    VoxelKey cluster;
-    Vec3 vehicle_position;
-    double timestamp = 0.0;
+    Vec3 position;
+    double expires_at = 0.0;
   };
-  std::deque<GoalHistoryEntry> goal_history_;
+  std::deque<FailedGoal> failed_goals_;
   PvbsmBatchQuery pvbsm_batch_query_;
 
   static double distance(const Vec3 &a, const Vec3 &b);
@@ -256,11 +257,11 @@ private:
   std::vector<std::vector<VoxelKey>> frontierClusters() const;
   double currentYaw() const;
   double headingChange(const Vec3 &position, const Vec3 &goal) const;
-  bool loopDetected(const Vec3 &position, double timestamp);
-  bool recentlySelectedCluster(const VoxelKey &cluster) const;
-  void rememberSelectedCluster(const VoxelKey &cluster,
-                               const Vec3 &position, double timestamp);
-  double frontierScore(const VoxelKey &key, const Vec3 &position) const;
+  bool nearFailedGoal(const Vec3 &point) const;
+  void pruneFailedGoals(double timestamp);
+  void recordFailedGoal(double timestamp);
+  void resetGoalProgress(const Vec3 &position, double timestamp);
+  double frontierScore(const VoxelKey &key) const;
   double pvbsmScoreAdjustment(const PvbsmExplorationHint &hint) const;
   void updateVisitMemory(const Vec3 &position);
   void updateGoalStatus(const Vec3 &position, double timestamp);
