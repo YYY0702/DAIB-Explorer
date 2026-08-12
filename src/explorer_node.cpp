@@ -81,6 +81,9 @@ public:
         nh_.advertise<geometry_msgs::PoseStamped>(goal_topic_, 1, true);
     frontiers_pub_ =
         nh_.advertise<sensor_msgs::PointCloud2>(frontiers_topic_, 1, true);
+    selected_cluster_frontiers_pub_ =
+        nh_.advertise<sensor_msgs::PointCloud2>(
+            selected_cluster_frontiers_topic_, 1, true);
     planning_cloud_pub_ =
         nh_.advertise<sensor_msgs::PointCloud2>(planning_cloud_topic_, 1);
     ready_pub_ = nh_.advertise<std_msgs::Bool>(ready_topic_, 1, true);
@@ -114,6 +117,7 @@ private:
   ros::Subscriber pvbsm_sub_;
   ros::Publisher goal_pub_;
   ros::Publisher frontiers_pub_;
+  ros::Publisher selected_cluster_frontiers_pub_;
   ros::Publisher planning_cloud_pub_;
   ros::Publisher ready_pub_;
   ros::Publisher state_pub_;
@@ -145,6 +149,8 @@ private:
   std::string pvbsm_topic_ = "/daib_slam/pvbsm_delta";
   std::string goal_topic_ = "/daib_explorer/goal";
   std::string frontiers_topic_ = "/daib_explorer/frontiers";
+  std::string selected_cluster_frontiers_topic_ =
+      "/daib_explorer/selected_cluster_frontiers";
   std::string planning_cloud_topic_ = "/daib_explorer/planning_cloud";
   std::string ready_topic_ = "/daib_explorer/ready";
   std::string state_topic_ = "/daib_explorer/state";
@@ -177,6 +183,9 @@ private:
     private_nh_.param("topics/pvbsm_delta", pvbsm_topic_, pvbsm_topic_);
     private_nh_.param("topics/goal", goal_topic_, goal_topic_);
     private_nh_.param("topics/frontiers", frontiers_topic_, frontiers_topic_);
+    private_nh_.param("topics/selected_cluster_frontiers",
+                      selected_cluster_frontiers_topic_,
+                      selected_cluster_frontiers_topic_);
     private_nh_.param(
         "topics/planning_cloud", planning_cloud_topic_, planning_cloud_topic_);
     private_nh_.param("topics/ready", ready_topic_, ready_topic_);
@@ -755,6 +764,22 @@ private:
       std_msgs::String state_message;
       state_message.data = decision.state + ":" + decision.reason;
       state_pub_.publish(state_message);
+      const bool selected_cluster_matches_goal =
+          decision.valid &&
+          core_->selectedClusterGeneration() == decision.generation;
+      if (decision.valid && !selected_cluster_matches_goal)
+      {
+        ROS_ERROR_STREAM(
+            "[ DAIB Explorer ] selected cluster generation mismatch: goal="
+            << decision.generation << ", cluster="
+            << core_->selectedClusterGeneration());
+      }
+      const std::vector<Vec3> selected_cluster_points =
+          selected_cluster_matches_goal ? core_->selectedFrontierPoints()
+                                        : std::vector<Vec3>{};
+      publishPointCloud(
+          selected_cluster_points,
+          cloud->header, selected_cluster_frontiers_pub_);
       if (decision.valid)
       {
         geometry_msgs::PoseStamped goal;
@@ -775,6 +800,8 @@ private:
                         << ", goal=(" << decision.position.x << ", "
                         << decision.position.y << ", " << decision.position.z
                         << "), tier=" << decision.constraint_tier
+                        << ", cluster_cells="
+                        << selected_cluster_points.size()
                         << ", heading_change="
                         << decision.heading_change_deg << " deg"
                         << ", plan=" << decision.planning_time_ms << " ms");
@@ -793,7 +820,12 @@ private:
     ROS_INFO_STREAM_THROTTLE(
         1.0, "[ DAIB Explorer ] map=" << stats.free_cells << " free/"
         << stats.occupied_cells << " occupied/" << stats.frontier_cells
-        << " frontier/" << stats.frontier_clusters << " clusters/"
+        << " frontier(raw)/" << stats.valid_frontier_cells << " valid/"
+        << stats.rejected_stale_frontiers << " stale, cluster="
+        << stats.frontier_components << " components/"
+        << stats.rejected_small_clusters << " small_rejected/"
+        << stats.frontier_clusters << " valid, cluster_ms="
+        << stats.last_cluster_ms << ", "
         << stats.candidates_scored << " candidates, reject="
         << stats.rejected_no_viewpoint << " no_viewpoint/"
         << stats.rejected_distance << " distance/"

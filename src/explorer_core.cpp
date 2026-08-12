@@ -184,13 +184,48 @@ int ExplorerCore::cellState(const VoxelKey &voxel) const
   return -1;
 }
 
-void ExplorerCore::markFrontierDirty(const VoxelKey &voxel)
+bool ExplorerCore::isFrontierVoxel(const VoxelKey &voxel) const
 {
-  dirty_frontiers_.insert(voxel);
+  if (cellState(voxel) != 0) return false;
+
+  bool has_unknown_neighbor = false;
+  int free_neighbors = 0;
   for (const auto &offset : kNeighbors)
   {
-    dirty_frontiers_.insert(
-        {voxel.x + offset[0], voxel.y + offset[1], voxel.z + offset[2]});
+    const int neighbor_state =
+        cellState({voxel.x + offset[0], voxel.y + offset[1],
+                   voxel.z + offset[2]});
+    if (neighbor_state < 0)
+      has_unknown_neighbor = true;
+    else if (neighbor_state == 0)
+      ++free_neighbors;
+  }
+  if (!has_unknown_neighbor || free_neighbors < 2) return false;
+
+  for (int dx = -1; dx <= 1; ++dx)
+  {
+    for (int dy = -1; dy <= 1; ++dy)
+    {
+      for (int dz = -1; dz <= 1; ++dz)
+      {
+        if (dx == 0 && dy == 0 && dz == 0) continue;
+        if (cellState({voxel.x + dx, voxel.y + dy, voxel.z + dz}) == 1)
+          return false;
+      }
+    }
+  }
+  return true;
+}
+
+void ExplorerCore::markFrontierDirty(const VoxelKey &voxel)
+{
+  for (int dx = -1; dx <= 1; ++dx)
+  {
+    for (int dy = -1; dy <= 1; ++dy)
+    {
+      for (int dz = -1; dz <= 1; ++dz)
+        dirty_frontiers_.insert({voxel.x + dx, voxel.y + dy, voxel.z + dz});
+    }
   }
 }
 
@@ -332,22 +367,7 @@ void ExplorerCore::updateFrontiers()
     const auto dirty_iter = dirty_frontiers_.begin();
     const VoxelKey voxel = *dirty_iter;
     dirty_frontiers_.erase(dirty_iter);
-    bool frontier = cellState(voxel) == 0;
-    if (frontier)
-    {
-      frontier = false;
-      for (const auto &offset : kNeighbors)
-      {
-        const VoxelKey neighbor{
-            voxel.x + offset[0], voxel.y + offset[1], voxel.z + offset[2]};
-        if (cellState(neighbor) < 0)
-        {
-          frontier = true;
-          break;
-        }
-      }
-    }
-    if (frontier) frontiers_.insert(voxel);
+    if (isFrontierVoxel(voxel)) frontiers_.insert(voxel);
     else frontiers_.erase(voxel);
     ++processed;
   }
@@ -469,22 +489,66 @@ bool ExplorerCore::hasWallClearance(const VoxelKey &voxel) const
   return true;
 }
 
-std::vector<std::vector<VoxelKey>> ExplorerCore::frontierClusters() const
+std::vector<std::vector<VoxelKey>> ExplorerCore::frontierClusters()
 {
+  const auto start = std::chrono::steady_clock::now();
   std::vector<std::vector<VoxelKey>> clusters;
-  std::unordered_map<VoxelKey, std::vector<VoxelKey>, VoxelKeyHash> buckets;
+  std::unordered_set<VoxelKey, VoxelKeyHash> unvisited;
+  std::vector<VoxelKey> stale;
+  unvisited.reserve(frontiers_.size());
+  stale.reserve(frontiers_.size());
+  stats_.rejected_stale_frontiers = 0;
   for (const VoxelKey &voxel : frontiers_)
   {
-    const Vec3 point = center(voxel, config_.planning_voxel_size_m);
-    buckets[key(point, config_.frontier_cluster_size_m)].push_back(voxel);
+    if (isFrontierVoxel(voxel))
+      unvisited.insert(voxel);
+    else
+    {
+      stale.push_back(voxel);
+      ++stats_.rejected_stale_frontiers;
+    }
   }
-  clusters.reserve(buckets.size());
-  for (auto &entry : buckets)
+  for (const VoxelKey &voxel : stale) frontiers_.erase(voxel);
+  stats_.frontier_cells = frontiers_.size();
+  stats_.valid_frontier_cells = unvisited.size();
+  stats_.frontier_components = 0;
+  stats_.rejected_small_clusters = 0;
+  clusters.reserve(unvisited.size());
+
+  std::queue<VoxelKey> open;
+  while (!unvisited.empty())
   {
-    if (entry.second.size() >=
+    std::vector<VoxelKey> component;
+    const VoxelKey seed = *unvisited.begin();
+    unvisited.erase(seed);
+    open.push(seed);
+    while (!open.empty())
+    {
+      const VoxelKey current = open.front();
+      open.pop();
+      component.push_back(current);
+      for (const auto &offset : kNeighbors)
+      {
+        const VoxelKey neighbor{current.x + offset[0],
+                                current.y + offset[1],
+                                current.z + offset[2]};
+        const auto neighbor_iter = unvisited.find(neighbor);
+        if (neighbor_iter == unvisited.end()) continue;
+        open.push(*neighbor_iter);
+        unvisited.erase(neighbor_iter);
+      }
+    }
+    ++stats_.frontier_components;
+    if (component.size() <
         static_cast<std::size_t>(config_.min_frontier_cluster_cells))
-      clusters.push_back(std::move(entry.second));
+    {
+      ++stats_.rejected_small_clusters;
+      continue;
+    }
+    clusters.push_back(std::move(component));
   }
+  stats_.last_cluster_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - start).count();
   return clusters;
 }
 
@@ -757,6 +821,7 @@ void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
   {
     VoxelKey voxel;
     Vec3 point;
+    const std::vector<VoxelKey> *cluster = nullptr;
     double known_free = 0.0;
     double distance = 0.0;
     double heading_change_deg = 0.0;
@@ -868,6 +933,7 @@ void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
     candidates.push_back(
         {representative,
          candidate,
+         &frontier_cluster,
          known_free,
          candidate_distance,
          heading,
@@ -910,6 +976,7 @@ void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
   Vec3 best;
   double best_heading_change = 0.0;
   bool found = false;
+  const std::vector<VoxelKey> *best_cluster = nullptr;
   int selected_tier = -1;
   for (std::size_t index = 0; index < candidates.size(); ++index)
   {
@@ -937,6 +1004,7 @@ void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
       best = candidate.point;
       best_heading_change = candidate.heading_change_deg;
       selected_tier = candidate.tier;
+      best_cluster = candidate.cluster;
       found = true;
       stats_.pvbsm_best_adjustment = pvbsm_adjustment;
     }
@@ -955,6 +1023,8 @@ void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
     }
     const bool changed = decision_.valid || decision_.state != "WAIT_FOR_FRONTIER";
     decision_.valid = false;
+    selected_frontier_cluster_.clear();
+    selected_cluster_generation_ = 0;
     decision_.updated = changed;
     decision_.state = "WAIT_FOR_FRONTIER";
     decision_.reason =
@@ -1018,6 +1088,11 @@ void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
   goal_set_time_ = timestamp;
   blocked_streak_ = 0;
   ++decision_.generation;
+  if (best_cluster)
+    selected_frontier_cluster_ = *best_cluster;
+  else
+    selected_frontier_cluster_.clear();
+  selected_cluster_generation_ = decision_.generation;
   last_goal_reachability_check_time_ = -1.0;
   cached_goal_reachable_ = true;
   resetGoalProgress(position, timestamp);
@@ -1162,6 +1237,15 @@ std::vector<Vec3> ExplorerCore::frontierPoints(std::size_t limit) const
     if (result.size() >= limit) break;
     result.push_back(center(voxel, config_.planning_voxel_size_m));
   }
+  return result;
+}
+
+std::vector<Vec3> ExplorerCore::selectedFrontierPoints() const
+{
+  std::vector<Vec3> result;
+  result.reserve(selected_frontier_cluster_.size());
+  for (const VoxelKey &voxel : selected_frontier_cluster_)
+    result.push_back(center(voxel, config_.planning_voxel_size_m));
   return result;
 }
 

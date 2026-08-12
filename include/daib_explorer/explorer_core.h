@@ -81,10 +81,12 @@ struct ExplorerConfig
   double min_known_free_path_ratio = 0.5;
   double goal_switch_margin = 0.15;
 
-  // DAIB-MCSVF: cluster raw frontier voxels, then place one safe viewpoint
-  // in known free space for each cluster before doing the original scoring.
+  // DAIB-MCSVF: cluster connected frontier voxels, then place one safe
+  // viewpoint in known free space for each cluster before scoring.
+  // frontier_cluster_size_m is retained for configuration compatibility; the
+  // current cluster definition is based on planning-voxel connectivity.
   double frontier_cluster_size_m = 2.0;
-  int min_frontier_cluster_cells = 1;
+  int min_frontier_cluster_cells = 10;
   double viewpoint_standoff_m = 1.0;
   double viewpoint_search_radius_m = 2.0;
   double min_wall_clearance_m = 0.5;
@@ -161,7 +163,12 @@ struct ExplorerStats
   std::size_t pvbsm_scored_candidates = 0;
   std::size_t pvbsm_unseen_candidates = 0;
   double pvbsm_best_adjustment = 0.0;
+  std::size_t valid_frontier_cells = 0;
+  std::size_t rejected_stale_frontiers = 0;
+  std::size_t frontier_components = 0;
+  std::size_t rejected_small_clusters = 0;
   std::size_t frontier_clusters = 0;
+  double last_cluster_ms = 0.0;
   std::size_t safe_viewpoint_candidates = 0;
   std::size_t rejected_no_viewpoint = 0;
   std::size_t rejected_distance = 0;
@@ -190,11 +197,18 @@ public:
               const std::vector<Vec3> &points, double timestamp);
   bool consumeDecision(GoalDecision &decision);
   std::vector<Vec3> frontierPoints(std::size_t limit) const;
+  std::vector<Vec3> selectedFrontierPoints() const;
+  uint64_t selectedClusterGeneration() const
+  {
+    return selected_cluster_generation_;
+  }
   std::vector<Vec3> occupiedPoints(const Vec3 &position, double radius,
                                    std::size_t limit) const;
 
   const ExplorerStats &stats() const { return stats_; }
 private:
+  friend class ExplorerCoreTestPeer;
+
   struct Cell
   {
     int16_t log_odds = 0;
@@ -208,6 +222,8 @@ private:
   std::unordered_set<VoxelKey, VoxelKeyHash> dirty_frontiers_;
   std::unordered_set<VoxelKey, VoxelKeyHash> frontiers_;
   std::unordered_map<VoxelKey, uint32_t, VoxelKeyHash> visits_;
+  std::vector<VoxelKey> selected_frontier_cluster_;
+  uint64_t selected_cluster_generation_ = 0;
 
   GoalDecision decision_;
   uint64_t update_id_ = 0;
@@ -242,6 +258,7 @@ private:
   VoxelKey key(const Vec3 &point, double voxel_size) const;
   Vec3 center(const VoxelKey &key, double voxel_size) const;
   int cellState(const VoxelKey &key) const;
+  bool isFrontierVoxel(const VoxelKey &key) const;
   void markFrontierDirty(const VoxelKey &key);
   void updateCell(const VoxelKey &key, int delta);
   void integrateCloud(const Vec3 &origin, const std::vector<Vec3> &points);
@@ -254,7 +271,7 @@ private:
   bool hasWallClearance(const VoxelKey &voxel) const;
   bool makeSafeViewpoint(const std::vector<VoxelKey> &cluster,
                          Vec3 &viewpoint, VoxelKey &representative) const;
-  std::vector<std::vector<VoxelKey>> frontierClusters() const;
+  std::vector<std::vector<VoxelKey>> frontierClusters();
   double currentYaw() const;
   double headingChange(const Vec3 &position, const Vec3 &goal) const;
   bool nearFailedGoal(const Vec3 &point) const;

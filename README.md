@@ -70,6 +70,7 @@ Outputs:
 |---|---|---|
 | `/daib_explorer/goal` | `geometry_msgs/PoseStamped` | EGO-Swarm bridge; timestamp and pose identify the goal |
 | `/daib_explorer/frontiers` | `sensor_msgs/PointCloud2` | RViz / validation |
+| `/daib_explorer/selected_cluster_frontiers` | `sensor_msgs/PointCloud2` | Complete frontier cluster that produced the current goal; empty when no goal is valid |
 | `/daib_explorer/planning_cloud` | `sensor_msgs/PointCloud2` | Rolling occupied-voxel centers for local planning |
 | `/daib_explorer/ready` | `std_msgs/Bool` | Planner watchdog; latched state plus 1 Hz heartbeat |
 | `/daib_explorer/state` | `std_msgs/String` | Validation/debug |

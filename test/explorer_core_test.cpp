@@ -1,6 +1,7 @@
 #include "daib_explorer/explorer_core.h"
 #include "daib_explorer/pvbsm_memory.h"
 
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
@@ -9,12 +10,87 @@
 namespace daib_explorer
 {
 
+class ExplorerCoreTestPeer
+{
+public:
+  static void setFrontiers(ExplorerCore &explorer,
+                           const std::vector<VoxelKey> &frontiers)
+  {
+    for (const VoxelKey &voxel : frontiers)
+    {
+      explorer.map_[voxel].log_odds = -1;
+      explorer.map_[{voxel.x, voxel.y - 1, voxel.z}].log_odds = -1;
+      explorer.map_[{voxel.x, voxel.y + 1, voxel.z}].log_odds = -1;
+      explorer.frontiers_.insert(voxel);
+    }
+  }
+
+  static std::vector<std::vector<VoxelKey>> clusters(ExplorerCore &explorer)
+  {
+    return explorer.frontierClusters();
+  }
+};
+
+TEST(ExplorerCore, SeparatesDisconnectedFrontiersInsideLegacyMetricBucket)
+{
+  ExplorerConfig config;
+  config.planning_voxel_size_m = 0.5;
+  config.frontier_cluster_size_m = 2.0;
+  config.min_frontier_cluster_cells = 1;
+  ExplorerCore explorer(config);
+  ExplorerCoreTestPeer::setFrontiers(
+      explorer, {{0, 0, 0}, {3, 0, 0}});
+
+  const auto clusters = ExplorerCoreTestPeer::clusters(explorer);
+
+  EXPECT_EQ(clusters.size(), 2U);
+  EXPECT_EQ(explorer.stats().frontier_components, 2U);
+}
+
+TEST(ExplorerCore, JoinsConnectedFrontiersAcrossLegacyMetricBucketBoundary)
+{
+  ExplorerConfig config;
+  config.planning_voxel_size_m = 0.5;
+  config.frontier_cluster_size_m = 2.0;
+  config.min_frontier_cluster_cells = 10;
+  ExplorerCore explorer(config);
+  ExplorerCoreTestPeer::setFrontiers(
+      explorer, {{2, 0, 0}, {3, 0, 0}, {4, 0, 0}, {5, 0, 0},
+                 {6, 0, 0}, {7, 0, 0}, {8, 0, 0}, {9, 0, 0},
+                 {10, 0, 0}, {11, 0, 0}});
+
+  const auto clusters = ExplorerCoreTestPeer::clusters(explorer);
+
+  ASSERT_EQ(clusters.size(), 1U);
+  EXPECT_EQ(clusters.front().size(), 10U);
+  EXPECT_EQ(explorer.stats().frontier_components, 1U);
+}
+
+TEST(ExplorerCore, RejectsConnectedFrontierComponentWithOnlyNineCells)
+{
+  ExplorerConfig config;
+  config.planning_voxel_size_m = 0.5;
+  config.min_frontier_cluster_cells = 10;
+  ExplorerCore explorer(config);
+  ExplorerCoreTestPeer::setFrontiers(
+      explorer, {{0, 0, 0}, {1, 0, 0}, {2, 0, 0},
+                 {3, 0, 0}, {4, 0, 0}, {5, 0, 0},
+                 {6, 0, 0}, {7, 0, 0}, {8, 0, 0}});
+
+  const auto clusters = ExplorerCoreTestPeer::clusters(explorer);
+
+  EXPECT_TRUE(clusters.empty());
+  EXPECT_EQ(explorer.stats().frontier_components, 1U);
+  EXPECT_EQ(explorer.stats().rejected_small_clusters, 1U);
+}
+
 TEST(ExplorerCore, BuildsFrontiersAndSelectsGoal)
 {
   ExplorerConfig config;
   config.min_goal_distance_m = 1.0;
   config.max_goal_distance_m = 10.0;
   config.max_raycasts_per_update = 64;
+  config.min_frontier_cluster_cells = 1;
   ExplorerCore explorer(config);
   explorer.setHealth(false, 0.2, 50.0);
 
@@ -29,8 +105,55 @@ TEST(ExplorerCore, BuildsFrontiersAndSelectsGoal)
   ASSERT_TRUE(explorer.consumeDecision(decision));
   EXPECT_TRUE(decision.valid);
   EXPECT_EQ(decision.generation, 1U);
+  EXPECT_FALSE(explorer.selectedFrontierPoints().empty());
+  EXPECT_EQ(explorer.selectedClusterGeneration(), decision.generation);
   EXPECT_GT(explorer.stats().candidates_scored, 0U);
   EXPECT_EQ(explorer.stats().reachability_checks, 0U);
+}
+
+TEST(ExplorerCore, RejectsFreeFrontierNextToOccupiedVoxel)
+{
+  ExplorerConfig config;
+  config.planning_voxel_size_m = 1.0;
+  config.planning_sensor_range_m = 10.0;
+  config.frontier_update_budget = 512;
+  ExplorerCore explorer(config);
+
+  explorer.update({0.0, 0.0, 0.0}, {}, {{3.5, 0.0, 0.0}}, 1.0);
+
+  const std::vector<Vec3> frontiers = explorer.frontierPoints(512);
+  const auto touches_endpoint = [](const Vec3 &point)
+  {
+    return std::fabs(point.x - 2.5) < 1e-9 &&
+           std::fabs(point.y - 0.5) < 1e-9 &&
+           std::fabs(point.z - 0.5) < 1e-9;
+  };
+  EXPECT_EQ(std::count_if(frontiers.begin(), frontiers.end(),
+                          touches_endpoint),
+            0);
+}
+
+TEST(ExplorerCore, RejectsFreeFrontierDiagonallyNextToOccupiedVoxel)
+{
+  ExplorerConfig config;
+  config.planning_voxel_size_m = 1.0;
+  config.planning_sensor_range_m = 10.0;
+  config.frontier_update_budget = 512;
+  ExplorerCore explorer(config);
+
+  explorer.update({0.0, 0.0, 0.0}, {},
+                  {{4.5, 0.0, 0.0}, {3.5, 1.5, 0.0}}, 1.0);
+
+  const std::vector<Vec3> frontiers = explorer.frontierPoints(512);
+  const auto diagonally_touches_endpoint = [](const Vec3 &point)
+  {
+    return std::fabs(point.x - 2.5) < 1e-9 &&
+           std::fabs(point.y - 0.5) < 1e-9 &&
+           std::fabs(point.z - 0.5) < 1e-9;
+  };
+  EXPECT_EQ(std::count_if(frontiers.begin(), frontiers.end(),
+                          diagonally_touches_endpoint),
+            0);
 }
 
 TEST(ExplorerCore, ScalesBudgetFromLioRuntime)
@@ -113,13 +236,14 @@ TEST(ExplorerCore, StalledGoalEntersCooldownBeforeSameAreaCanReturn)
 {
   ExplorerConfig config;
   config.min_goal_distance_m = 1.0;
-  config.max_goal_distance_m = 4.0;
+  config.max_goal_distance_m = 5.0;
   config.goal_min_hold_time_s = 0.0;
   config.goal_timeout_s = 0.0;
   config.goal_progress_epsilon_m = 0.25;
   config.goal_stall_timeout_s = 15.0;
   config.failed_goal_exclusion_radius_m = 2.0;
   config.failed_goal_cooldown_s = 30.0;
+  config.min_frontier_cluster_cells = 1;
   ExplorerCore explorer(config);
   const std::vector<Vec3> points{{8.0, 0.0, 0.0}};
 
@@ -134,6 +258,8 @@ TEST(ExplorerCore, StalledGoalEntersCooldownBeforeSameAreaCanReturn)
   EXPECT_FALSE(stalled.valid);
   EXPECT_EQ(stalled.state, "WAIT_FOR_FRONTIER");
   EXPECT_EQ(stalled.reason, "goal_stalled_no_safe_frontier");
+  EXPECT_TRUE(explorer.selectedFrontierPoints().empty());
+  EXPECT_EQ(explorer.selectedClusterGeneration(), 0U);
   EXPECT_EQ(explorer.stats().stalled_goals, 1U);
   EXPECT_EQ(explorer.stats().failed_goals_in_cooldown, 1U);
 
@@ -174,6 +300,7 @@ TEST(ExplorerCore, ReachedGoalAllowsNextGeneration)
   ExplorerConfig config;
   config.min_goal_distance_m = 1.0;
   config.max_goal_distance_m = 10.0;
+  config.min_frontier_cluster_cells = 1;
   ExplorerCore explorer(config);
 
   explorer.update({0.0, 0.0, 0.0}, {}, {{8.0, 0.0, 0.0}}, 1.0);
@@ -242,6 +369,7 @@ TEST(ExplorerCore, UsesSymmetricRelativeVerticalBound)
   config.min_goal_distance_m = 1.0;
   config.max_goal_distance_m = 10.0;
   config.max_goal_vertical_distance_m = 3.0;
+  config.min_frontier_cluster_cells = 1;
 
   ExplorerCore above(config);
   const Vec3 high_position{0.0, 0.0, 10.0};
@@ -266,6 +394,7 @@ TEST(ExplorerCore, RequiresConsecutiveObstacleConfirmation)
   config.max_goal_distance_m = 10.0;
   config.goal_min_hold_time_s = 10.0;
   config.goal_blocked_confirm_updates = 3;
+  config.min_frontier_cluster_cells = 1;
   ExplorerCore explorer(config);
   std::vector<Vec3> ring;
   for (int degree = 0; degree < 360; degree += 10)
@@ -531,10 +660,14 @@ TEST(PvbsmMemory, ReplacesIncrementalSubmapEvidence)
 TEST(ExplorerCore, PrefersPvbsmUnseenFrontier)
 {
   ExplorerConfig config;
-  config.min_goal_distance_m = 1.0;
+  config.min_goal_distance_m = 0.1;
   config.max_goal_distance_m = 10.0;
   config.pvbsm_unseen_submap_bonus = 10.0;
   config.pvbsm_submap_coverage_penalty = 10.0;
+  config.min_frontier_cluster_cells = 1;
+  config.max_goal_vertical_distance_m = 10.0;
+  config.planning_sensor_range_m = 30.0;
+  config.planning_map_radius_m = 40.0;
   ExplorerCore explorer(config);
   explorer.setHealth(false, 0.2, 10.0);
   explorer.setPvbsmBatchQuery(
@@ -555,9 +688,8 @@ TEST(ExplorerCore, PrefersPvbsmUnseenFrontier)
         return hints;
       });
 
-  explorer.update(
-      {0.0, 0.0, 0.0}, {0.0, 0.0, 1.0, 0.0},
-      {{8.0, 0.0, 0.0}, {-8.0, 0.0, 0.0}}, 1.0);
+  explorer.update({0.0, 0.0, 0.0}, {0.0, 0.0, 1.0, 0.0},
+                  {{-8.0, 0.0, 0.0}}, 1.0);
   GoalDecision decision;
   ASSERT_TRUE(explorer.consumeDecision(decision));
   ASSERT_TRUE(decision.valid);

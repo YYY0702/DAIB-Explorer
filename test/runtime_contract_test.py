@@ -20,6 +20,7 @@ class RuntimeContractTest(unittest.TestCase):
         self._goal = None
         self._generation = None
         self._frontier = None
+        self._selected_cluster = None
         self._odom_pub = rospy.Publisher(
             "/daib_slam/odom", Odometry, queue_size=1
         )
@@ -50,6 +51,12 @@ class RuntimeContractTest(unittest.TestCase):
             self._frontier_callback,
             queue_size=1,
         )
+        self._selected_cluster_sub = rospy.Subscriber(
+            "/daib_explorer/selected_cluster_frontiers",
+            PointCloud2,
+            self._selected_cluster_callback,
+            queue_size=1,
+        )
         self._generation_sub = rospy.Subscriber(
             "/daib_explorer/generation",
             UInt64,
@@ -68,6 +75,10 @@ class RuntimeContractTest(unittest.TestCase):
     def _frontier_callback(self, message):
         with self._lock:
             self._frontier = message
+
+    def _selected_cluster_callback(self, message):
+        with self._lock:
+            self._selected_cluster = message
 
     def _generation_callback(self, message):
         with self._lock:
@@ -106,6 +117,8 @@ class RuntimeContractTest(unittest.TestCase):
                     and self._generation is not None
                     and self._frontier is not None
                     and self._frontier.width > 0
+                    and self._selected_cluster is not None
+                    and self._selected_cluster.width > 0
                 ):
                     break
             rate.sleep()
@@ -115,10 +128,15 @@ class RuntimeContractTest(unittest.TestCase):
             self.assertIsNotNone(self._goal)
             self.assertIsNotNone(self._frontier)
             self.assertGreater(self._frontier.width, 0)
+            self.assertIsNotNone(self._selected_cluster)
+            self.assertGreater(self._selected_cluster.width, 0)
             self.assertEqual(self._goal.header.frame_id, "camera_init")
             self.assertFalse(self._goal.header.stamp.is_zero())
             self.assertEqual(self._generation, 1)
             self.assertEqual(self._frontier.header.frame_id, "camera_init")
+            self.assertEqual(
+                self._selected_cluster.header.frame_id, "camera_init"
+            )
 
         stale_deadline = rospy.Time.now() + rospy.Duration(2.0)
         while not rospy.is_shutdown() and rospy.Time.now() < stale_deadline:
