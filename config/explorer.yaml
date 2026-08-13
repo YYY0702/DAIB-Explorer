@@ -9,6 +9,7 @@ topics:
   pvbsm_delta: /daib_slam/pvbsm_delta
   goal: /daib_explorer/goal
   frontiers: /daib_explorer/frontiers
+  valid_cluster_frontiers: /daib_explorer/valid_cluster_frontiers
   selected_cluster_frontiers: /daib_explorer/selected_cluster_frontiers
   planning_cloud: /daib_explorer/planning_cloud
   ready: /daib_explorer/ready

@@ -793,6 +793,12 @@ void ExplorerCore::updateVisitMemory(const Vec3 &position)
 
 void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
 {
+  const std::vector<std::vector<VoxelKey>> clusters = frontierClusters();
+  valid_cluster_frontiers_.clear();
+  for (const std::vector<VoxelKey> &cluster : clusters)
+    valid_cluster_frontiers_.insert(
+        valid_cluster_frontiers_.end(), cluster.begin(), cluster.end());
+
   pruneFailedGoals(timestamp);
   const bool had_goal = decision_.valid;
   const bool failed_active_goal =
@@ -839,7 +845,6 @@ void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
   };
   std::vector<Candidate> candidates;
   candidates.reserve(static_cast<std::size_t>(budget));
-  const std::vector<std::vector<VoxelKey>> clusters = frontierClusters();
   stats_.frontier_clusters = clusters.size();
   struct ClusterOrder
   {
@@ -1255,6 +1260,15 @@ std::vector<Vec3> ExplorerCore::selectedFrontierPoints() const
   std::vector<Vec3> result;
   result.reserve(selected_frontier_cluster_.size());
   for (const VoxelKey &voxel : selected_frontier_cluster_)
+    result.push_back(center(voxel, config_.planning_voxel_size_m));
+  return result;
+}
+
+std::vector<Vec3> ExplorerCore::validClusterFrontierPoints() const
+{
+  std::vector<Vec3> result;
+  result.reserve(valid_cluster_frontiers_.size());
+  for (const VoxelKey &voxel : valid_cluster_frontiers_)
     result.push_back(center(voxel, config_.planning_voxel_size_m));
   return result;
 }

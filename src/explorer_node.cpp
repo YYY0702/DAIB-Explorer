@@ -81,6 +81,9 @@ public:
         nh_.advertise<geometry_msgs::PoseStamped>(goal_topic_, 1, true);
     frontiers_pub_ =
         nh_.advertise<sensor_msgs::PointCloud2>(frontiers_topic_, 1, true);
+    valid_cluster_frontiers_pub_ =
+        nh_.advertise<sensor_msgs::PointCloud2>(
+            valid_cluster_frontiers_topic_, 1, true);
     selected_cluster_frontiers_pub_ =
         nh_.advertise<sensor_msgs::PointCloud2>(
             selected_cluster_frontiers_topic_, 1, true);
@@ -117,6 +120,7 @@ private:
   ros::Subscriber pvbsm_sub_;
   ros::Publisher goal_pub_;
   ros::Publisher frontiers_pub_;
+  ros::Publisher valid_cluster_frontiers_pub_;
   ros::Publisher selected_cluster_frontiers_pub_;
   ros::Publisher planning_cloud_pub_;
   ros::Publisher ready_pub_;
@@ -149,6 +153,8 @@ private:
   std::string pvbsm_topic_ = "/daib_slam/pvbsm_delta";
   std::string goal_topic_ = "/daib_explorer/goal";
   std::string frontiers_topic_ = "/daib_explorer/frontiers";
+  std::string valid_cluster_frontiers_topic_ =
+      "/daib_explorer/valid_cluster_frontiers";
   std::string selected_cluster_frontiers_topic_ =
       "/daib_explorer/selected_cluster_frontiers";
   std::string planning_cloud_topic_ = "/daib_explorer/planning_cloud";
@@ -183,6 +189,9 @@ private:
     private_nh_.param("topics/pvbsm_delta", pvbsm_topic_, pvbsm_topic_);
     private_nh_.param("topics/goal", goal_topic_, goal_topic_);
     private_nh_.param("topics/frontiers", frontiers_topic_, frontiers_topic_);
+    private_nh_.param("topics/valid_cluster_frontiers",
+                      valid_cluster_frontiers_topic_,
+                      valid_cluster_frontiers_topic_);
     private_nh_.param("topics/selected_cluster_frontiers",
                       selected_cluster_frontiers_topic_,
                       selected_cluster_frontiers_topic_);
@@ -738,6 +747,8 @@ private:
                                     : cloud->header.stamp.toSec();
     const uint64_t previous_frontier_cycle =
         core_->stats().frontier_update_cycles;
+    const uint64_t previous_goal_cycle =
+        core_->stats().goal_evaluation_cycles;
     core_->setHealth(degenerate, score, runtime);
     core_->update(position, orientation, points, timestamp);
     processed_cloud_sequence_ = cloud_sequence;
@@ -750,6 +761,10 @@ private:
               static_cast<std::size_t>(max_published_frontiers_)),
           cloud->header, frontiers_pub_);
     }
+    if (core_->stats().goal_evaluation_cycles != previous_goal_cycle)
+      publishPointCloud(
+          core_->validClusterFrontierPoints(),
+          cloud->header, valid_cluster_frontiers_pub_);
     if (planning_cloud_pub_.getNumSubscribers() > 0)
       publishPointCloud(
           core_->occupiedPoints(

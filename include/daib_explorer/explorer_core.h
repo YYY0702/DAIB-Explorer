@@ -198,6 +198,7 @@ public:
               const std::vector<Vec3> &points, double timestamp);
   bool consumeDecision(GoalDecision &decision);
   std::vector<Vec3> frontierPoints(std::size_t limit) const;
+  std::vector<Vec3> validClusterFrontierPoints() const;
   std::vector<Vec3> selectedFrontierPoints() const;
   uint64_t selectedClusterGeneration() const
   {
@@ -223,6 +224,7 @@ private:
   std::unordered_set<VoxelKey, VoxelKeyHash> dirty_frontiers_;
   std::unordered_set<VoxelKey, VoxelKeyHash> frontiers_;
   std::unordered_map<VoxelKey, uint32_t, VoxelKeyHash> visits_;
+  std::vector<VoxelKey> valid_cluster_frontiers_;
   std::vector<VoxelKey> selected_frontier_cluster_;
   uint64_t selected_cluster_generation_ = 0;
 
