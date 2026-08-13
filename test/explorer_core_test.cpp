@@ -29,6 +29,53 @@ public:
   {
     return explorer.frontierClusters();
   }
+
+  static uint16_t memoryObservations(const ExplorerCore &explorer,
+                                     const VoxelKey &voxel)
+  {
+    const auto iter = explorer.exploration_memory_.find(voxel);
+    return iter == explorer.exploration_memory_.end()
+               ? 0U
+               : iter->second.observations;
+  }
+
+  static void setMemoryObservations(ExplorerCore &explorer,
+                                    const VoxelKey &voxel,
+                                    uint16_t observations)
+  {
+    explorer.exploration_memory_[voxel].observations = observations;
+  }
+
+  static double historicalRatio(ExplorerCore &explorer,
+                                const std::vector<VoxelKey> &cluster,
+                                std::size_t *probe_cells = nullptr)
+  {
+    return explorer.clusterHistoricalObservedRatio(cluster, probe_cells);
+  }
+
+  static void setPositiveXFrontier(ExplorerCore &explorer,
+                                   const VoxelKey &voxel)
+  {
+    explorer.map_[voxel].log_odds = -1;
+    explorer.map_[{voxel.x - 1, voxel.y, voxel.z}].log_odds = -1;
+    explorer.map_[{voxel.x, voxel.y - 1, voxel.z}].log_odds = -1;
+    explorer.map_[{voxel.x, voxel.y + 1, voxel.z}].log_odds = -1;
+    explorer.map_[{voxel.x, voxel.y, voxel.z - 1}].log_odds = -1;
+    explorer.map_[{voxel.x, voxel.y, voxel.z + 1}].log_odds = -1;
+    explorer.frontiers_.insert(voxel);
+  }
+
+  static void updateDecision(ExplorerCore &explorer,
+                             const Vec3 &position,
+                             double timestamp)
+  {
+    explorer.updateDecision(position, timestamp);
+  }
+
+  static void enableHistoricalFilter(ExplorerCore &explorer)
+  {
+    explorer.config_.exploration_memory_filter_enabled = true;
+  }
 };
 
 TEST(ExplorerCore, SeparatesDisconnectedFrontiersInsideLegacyMetricBucket)
@@ -230,6 +277,97 @@ TEST(ExplorerCore, MaintainsOnlyLightweightVisitMemory)
   EXPECT_EQ(explorer.stats().visited_cells, 2U);
   EXPECT_EQ(explorer.stats().observed_cells, 0U);
   EXPECT_EQ(explorer.stats().submap_count, 0U);
+}
+
+TEST(ExplorerCore, ExplorationMemoryDeduplicatesFramesAndSurvivesPruning)
+{
+  ExplorerConfig config;
+  config.planning_voxel_size_m = 1.0;
+  config.planning_sensor_range_m = 5.0;
+  config.planning_map_radius_m = 5.0;
+  config.planning_prune_budget = 1000;
+  config.max_raycasts_per_update = 64;
+  config.exploration_memory_enabled = true;
+  config.exploration_memory_voxel_size_m = 1.0;
+  config.exploration_memory_min_observations = 3;
+  config.exploration_memory_max_range_m = 5.0;
+  ExplorerCore explorer(config);
+  const std::vector<Vec3> duplicate_points{
+      {4.2, 0.0, 0.0}, {4.2, 0.0, 0.0}, {4.2, 0.0, 0.0}};
+
+  explorer.update({0.0, 0.0, 0.0}, {}, duplicate_points, 1.0);
+  EXPECT_EQ(ExplorerCoreTestPeer::memoryObservations(
+                explorer, {2, 0, 0}),
+            1U);
+  explorer.update({0.0, 0.0, 0.0}, {}, duplicate_points, 2.0);
+  explorer.update({0.0, 0.0, 0.0}, {}, duplicate_points, 3.0);
+  EXPECT_EQ(ExplorerCoreTestPeer::memoryObservations(
+                explorer, {2, 0, 0}),
+            3U);
+  EXPECT_GT(explorer.stats().stable_exploration_memory_cells, 0U);
+  const std::size_t stable_before_prune =
+      explorer.stats().stable_exploration_memory_cells;
+
+  explorer.update({100.0, 0.0, 0.0}, {}, {}, 4.0);
+  EXPECT_EQ(ExplorerCoreTestPeer::memoryObservations(
+                explorer, {2, 0, 0}),
+            3U);
+  EXPECT_EQ(explorer.stats().stable_exploration_memory_cells,
+            stable_before_prune);
+}
+
+TEST(ExplorerCore, EmptyCloudDoesNotCreateObservationMemory)
+{
+  ExplorerConfig config;
+  config.exploration_memory_enabled = true;
+  ExplorerCore explorer(config);
+
+  explorer.update({2.0, 3.0, 4.0}, {}, {}, 1.0);
+
+  EXPECT_EQ(explorer.stats().exploration_memory_cells, 0U);
+  EXPECT_EQ(explorer.stats().stable_exploration_memory_cells, 0U);
+}
+
+TEST(ExplorerCore, HistoricalFilterRejectsPreviouslyObservedUnknownSide)
+{
+  ExplorerConfig config;
+  config.planning_voxel_size_m = 1.0;
+  config.min_frontier_cluster_cells = 1;
+  config.exploration_memory_enabled = true;
+  config.exploration_memory_filter_enabled = false;
+  config.exploration_memory_voxel_size_m = 1.0;
+  config.exploration_memory_min_observations = 3;
+  config.frontier_history_probe_step_m = 1.0;
+  config.frontier_history_probe_distance_m = 4.0;
+  config.frontier_history_observed_ratio = 0.7;
+  ExplorerCore explorer(config);
+  const VoxelKey frontier{0, 0, 0};
+  ExplorerCoreTestPeer::setPositiveXFrontier(explorer, frontier);
+  for (int64_t x = 1; x <= 4; ++x)
+    ExplorerCoreTestPeer::setMemoryObservations(explorer, {x, 0, 0}, 3U);
+
+  std::size_t probe_cells = 0;
+  EXPECT_DOUBLE_EQ(
+      ExplorerCoreTestPeer::historicalRatio(
+          explorer, {frontier}, &probe_cells),
+      1.0);
+  EXPECT_EQ(probe_cells, 4U);
+
+  ExplorerCoreTestPeer::updateDecision(
+      explorer, {0.0, 0.0, 0.0}, 1.0);
+  EXPECT_EQ(explorer.stats().historical_clusters_checked, 1U);
+  EXPECT_EQ(explorer.stats().historical_clusters_observed, 1U);
+  EXPECT_EQ(explorer.stats().rejected_historical_clusters, 0U);
+  EXPECT_EQ(explorer.stats().frontier_clusters, 1U);
+
+  ExplorerCoreTestPeer::enableHistoricalFilter(explorer);
+  ExplorerCoreTestPeer::updateDecision(
+      explorer, {0.0, 0.0, 0.0}, 2.0);
+  EXPECT_EQ(explorer.stats().historical_clusters_checked, 1U);
+  EXPECT_EQ(explorer.stats().historical_clusters_observed, 1U);
+  EXPECT_EQ(explorer.stats().rejected_historical_clusters, 1U);
+  EXPECT_EQ(explorer.stats().frontier_clusters, 0U);
+  EXPECT_EQ(explorer.validClusterFrontierPoints().size(), 1U);
 }
 
 TEST(ExplorerCore, KeepsAcceptedGoalWhileVehicleMakesProgress)

@@ -73,6 +73,20 @@ long_term_update_rate_hz: 1.0
 # second point-cloud-derived long-term map inside Explorer.
 coverage_voxel_size_m: 2.0
 
+# Mission-lifetime observation memory. It reuses the already budgeted LiDAR
+# rays, deduplicates every cell within a cloud frame, and requires evidence
+# from three distinct frames before a 1 m cell becomes stable observed.
+# Keep filtering disabled for the first flight: validate monotonically growing
+# cells/stable counters and history ratios before allowing it to suppress goals.
+exploration_memory_enabled: true
+exploration_memory_filter_enabled: false
+exploration_memory_voxel_size_m: 1.0
+exploration_memory_min_observations: 3
+exploration_memory_max_range_m: 20.0
+frontier_history_probe_distance_m: 4.0
+frontier_history_probe_step_m: 1.0
+frontier_history_observed_ratio: 0.7
+
 replan_interval_s: 1.0
 goal_min_hold_time_s: 5.0
 # Hold an accepted goal until reached, persistently blocked or stalled.

@@ -283,6 +283,30 @@ private:
     private_nh_.param("coverage_voxel_size_m",
                       config.coverage_voxel_size_m,
                       config.coverage_voxel_size_m);
+    private_nh_.param("exploration_memory_enabled",
+                      config.exploration_memory_enabled,
+                      config.exploration_memory_enabled);
+    private_nh_.param("exploration_memory_filter_enabled",
+                      config.exploration_memory_filter_enabled,
+                      config.exploration_memory_filter_enabled);
+    private_nh_.param("exploration_memory_voxel_size_m",
+                      config.exploration_memory_voxel_size_m,
+                      config.exploration_memory_voxel_size_m);
+    private_nh_.param("exploration_memory_min_observations",
+                      config.exploration_memory_min_observations,
+                      config.exploration_memory_min_observations);
+    private_nh_.param("exploration_memory_max_range_m",
+                      config.exploration_memory_max_range_m,
+                      config.exploration_memory_max_range_m);
+    private_nh_.param("frontier_history_probe_distance_m",
+                      config.frontier_history_probe_distance_m,
+                      config.frontier_history_probe_distance_m);
+    private_nh_.param("frontier_history_probe_step_m",
+                      config.frontier_history_probe_step_m,
+                      config.frontier_history_probe_step_m);
+    private_nh_.param("frontier_history_observed_ratio",
+                      config.frontier_history_observed_ratio,
+                      config.frontier_history_observed_ratio);
     private_nh_.param("replan_interval_s",
                       config.replan_interval_s,
                       config.replan_interval_s);
@@ -858,6 +882,12 @@ private:
         << stats.rejected_known_free_path << " known_path/"
         << stats.rejected_failed_goal << " failed_goal"
         << ", visited=" << stats.visited_cells
+        << ", exploration_memory=" << stats.exploration_memory_cells
+        << " cells/" << stats.stable_exploration_memory_cells
+        << " stable, history=" << stats.historical_clusters_checked
+        << " checked/" << stats.historical_clusters_observed
+        << " observed/" << stats.rejected_historical_clusters
+        << " rejected/" << stats.historical_probe_cells << " probes"
         // Compatibility aliases: existing log parsers can keep consuming
         // observed/submaps, but both now come from the single PVBSM memory.
         << ", observed=" << pvbsm_root_count

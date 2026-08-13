@@ -63,6 +63,18 @@ struct ExplorerConfig
 
   double coverage_voxel_size_m = 2.0;
 
+  // Mission-lifetime observation memory is independent from the rolling
+  // collision map and PVBSM structural memory. It records only whether a
+  // coarse cell has been observed consistently across different cloud frames.
+  bool exploration_memory_enabled = true;
+  bool exploration_memory_filter_enabled = false;
+  double exploration_memory_voxel_size_m = 1.0;
+  int exploration_memory_min_observations = 3;
+  double exploration_memory_max_range_m = 20.0;
+  double frontier_history_probe_distance_m = 4.0;
+  double frontier_history_probe_step_m = 1.0;
+  double frontier_history_observed_ratio = 0.7;
+
   double replan_interval_s = 1.0;
   double goal_min_hold_time_s = 5.0;
   int goal_blocked_confirm_updates = 10;
@@ -150,6 +162,12 @@ struct ExplorerStats
   std::size_t occupied_cells = 0;
   std::size_t frontier_cells = 0;
   std::size_t visited_cells = 0;
+  std::size_t exploration_memory_cells = 0;
+  std::size_t stable_exploration_memory_cells = 0;
+  std::size_t historical_clusters_checked = 0;
+  std::size_t historical_clusters_observed = 0;
+  std::size_t rejected_historical_clusters = 0;
+  std::size_t historical_probe_cells = 0;
   // Deprecated compatibility slots. ExplorerNode exposes the corresponding
   // observed/submaps log values from PvbsmMemory instead of this core.
   std::size_t observed_cells = 0;
@@ -222,6 +240,13 @@ private:
     uint64_t last_update = 0;
   };
 
+  struct ExplorationMemoryCell
+  {
+    uint16_t observations = 0;
+    // Bit 0: traversed free-space evidence; bit 1: ray endpoint evidence.
+    uint8_t evidence = 0;
+  };
+
   ExplorerConfig config_;
   ExplorerStats stats_;
   std::unordered_map<VoxelKey, Cell, VoxelKeyHash> map_;
@@ -229,6 +254,8 @@ private:
   std::unordered_set<VoxelKey, VoxelKeyHash> dirty_frontiers_;
   std::unordered_set<VoxelKey, VoxelKeyHash> frontiers_;
   std::unordered_map<VoxelKey, uint32_t, VoxelKeyHash> visits_;
+  std::unordered_map<VoxelKey, ExplorationMemoryCell, VoxelKeyHash>
+      exploration_memory_;
   std::vector<VoxelKey> valid_cluster_frontiers_;
   std::vector<VoxelKey> selected_frontier_cluster_;
   uint64_t selected_cluster_generation_ = 0;
@@ -270,6 +297,13 @@ private:
   void markFrontierDirty(const VoxelKey &key);
   void updateCell(const VoxelKey &key, int delta);
   void integrateCloud(const Vec3 &origin, const std::vector<Vec3> &points);
+  void updateExplorationMemory(
+      const std::unordered_map<VoxelKey, uint8_t, VoxelKeyHash>
+          &frame_evidence);
+  bool explorationMemoryObserved(const VoxelKey &key) const;
+  double clusterHistoricalObservedRatio(
+      const std::vector<VoxelKey> &cluster,
+      std::size_t *probe_cells = nullptr) const;
   void prune(const Vec3 &position);
   void updateFrontiers();
   bool segmentBlocked(const Vec3 &start, const Vec3 &end,

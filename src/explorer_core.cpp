@@ -94,6 +94,22 @@ void ExplorerCore::sanitizeConfig()
   config_.long_term_update_rate_hz =
       std::max(0.1, config_.long_term_update_rate_hz);
   config_.coverage_voxel_size_m = std::max(0.1, config_.coverage_voxel_size_m);
+  config_.exploration_memory_voxel_size_m =
+      std::max(0.1, config_.exploration_memory_voxel_size_m);
+  config_.exploration_memory_min_observations =
+      std::max(1, std::min(65535,
+                           config_.exploration_memory_min_observations));
+  config_.exploration_memory_max_range_m =
+      std::max(config_.exploration_memory_voxel_size_m,
+               config_.exploration_memory_max_range_m);
+  config_.frontier_history_probe_step_m =
+      std::max(config_.exploration_memory_voxel_size_m,
+               config_.frontier_history_probe_step_m);
+  config_.frontier_history_probe_distance_m =
+      std::max(config_.frontier_history_probe_step_m,
+               config_.frontier_history_probe_distance_m);
+  config_.frontier_history_observed_ratio =
+      clamp(config_.frontier_history_observed_ratio, 0.0, 1.0);
   config_.replan_interval_s = std::max(0.1, config_.replan_interval_s);
   config_.goal_timeout_s = std::max(0.0, config_.goal_timeout_s);
   config_.goal_min_hold_time_s =
@@ -311,11 +327,13 @@ void ExplorerCore::integrateCloud(const Vec3 &origin,
   // for several map cycles after the vehicle has entered it and EGO will
   // reject every trajectory as starting inside an obstacle.
   updateCell(key(origin, config_.planning_voxel_size_m), -10);
+  std::unordered_map<VoxelKey, uint8_t, VoxelKeyHash> memory_frame;
   const int ray_budget = std::max(
       1, static_cast<int>(std::lround(
              config_.max_raycasts_per_update * stats_.budget_scale)));
   stats_.effective_raycasts = ray_budget;
-  if (points.empty()) return;
+  if (points.empty())
+    return;
 
   const std::size_t max_rays = static_cast<std::size_t>(ray_budget);
   const std::size_t stride =
@@ -332,6 +350,9 @@ void ExplorerCore::integrateCloud(const Vec3 &origin,
         range < config_.planning_voxel_size_m ||
         range > config_.planning_sensor_range_m)
       continue;
+
+    if (config_.exploration_memory_enabled)
+      memory_frame[key(origin, config_.exploration_memory_voxel_size_m)] |= 1U;
 
     const int steps = std::min(
         config_.max_ray_steps,
@@ -350,7 +371,118 @@ void ExplorerCore::integrateCloud(const Vec3 &origin,
       }
     }
     updateCell(key(endpoint, config_.planning_voxel_size_m), 2);
+
+    if (config_.exploration_memory_enabled)
+    {
+      const double memory_range =
+          std::min(range, config_.exploration_memory_max_range_m);
+      const int memory_steps = std::max(
+          1, static_cast<int>(std::ceil(
+                 memory_range / config_.exploration_memory_voxel_size_m)));
+      VoxelKey previous_memory =
+          key(origin, config_.exploration_memory_voxel_size_m);
+      const bool endpoint_in_memory =
+          range <= config_.exploration_memory_max_range_m;
+      const int last_free_step =
+          endpoint_in_memory ? memory_steps - 1 : memory_steps;
+      for (int step = 1; step <= last_free_step; ++step)
+      {
+        const VoxelKey free_key = key(
+            addScaled(origin, ray,
+                      memory_range / range *
+                          static_cast<double>(step) / memory_steps),
+            config_.exploration_memory_voxel_size_m);
+        if (!(free_key == previous_memory))
+        {
+          memory_frame[free_key] |= 1U;
+          previous_memory = free_key;
+        }
+      }
+      if (endpoint_in_memory)
+        memory_frame[key(endpoint,
+                         config_.exploration_memory_voxel_size_m)] |= 2U;
+    }
   }
+  updateExplorationMemory(memory_frame);
+}
+
+void ExplorerCore::updateExplorationMemory(
+    const std::unordered_map<VoxelKey, uint8_t, VoxelKeyHash> &frame_evidence)
+{
+  if (!config_.exploration_memory_enabled) return;
+  for (const auto &entry : frame_evidence)
+  {
+    ExplorationMemoryCell &cell = exploration_memory_[entry.first];
+    const bool was_stable =
+        cell.observations >= config_.exploration_memory_min_observations;
+    if (cell.observations < std::numeric_limits<uint16_t>::max())
+      ++cell.observations;
+    cell.evidence |= entry.second;
+    if (!was_stable &&
+        cell.observations >= config_.exploration_memory_min_observations)
+      ++stats_.stable_exploration_memory_cells;
+  }
+  stats_.exploration_memory_cells = exploration_memory_.size();
+}
+
+bool ExplorerCore::explorationMemoryObserved(const VoxelKey &voxel) const
+{
+  const auto iter = exploration_memory_.find(voxel);
+  return iter != exploration_memory_.end() &&
+         iter->second.observations >=
+             config_.exploration_memory_min_observations;
+}
+
+double ExplorerCore::clusterHistoricalObservedRatio(
+    const std::vector<VoxelKey> &cluster,
+    std::size_t *probe_cells) const
+{
+  std::unordered_set<VoxelKey, VoxelKeyHash> probes;
+  if (!config_.exploration_memory_enabled || cluster.empty())
+  {
+    if (probe_cells) *probe_cells = 0;
+    return 0.0;
+  }
+
+  for (const VoxelKey &frontier : cluster)
+  {
+    Vec3 unknown_direction;
+    for (const auto &offset : kFaceNeighbors)
+    {
+      if (cellState({frontier.x + offset[0], frontier.y + offset[1],
+                     frontier.z + offset[2]}) < 0)
+      {
+        unknown_direction.x += offset[0];
+        unknown_direction.y += offset[1];
+        unknown_direction.z += offset[2];
+      }
+    }
+    const double norm = std::sqrt(
+        unknown_direction.x * unknown_direction.x +
+        unknown_direction.y * unknown_direction.y +
+        unknown_direction.z * unknown_direction.z);
+    if (norm < 1e-6) continue;
+    unknown_direction.x /= norm;
+    unknown_direction.y /= norm;
+    unknown_direction.z /= norm;
+    const Vec3 origin = center(frontier, config_.planning_voxel_size_m);
+    for (double distance_m = config_.frontier_history_probe_step_m;
+         distance_m <= config_.frontier_history_probe_distance_m + 1e-9;
+         distance_m += config_.frontier_history_probe_step_m)
+    {
+      probes.insert(key(addScaled(origin, unknown_direction, distance_m),
+                        config_.exploration_memory_voxel_size_m));
+    }
+  }
+
+  if (probe_cells) *probe_cells = probes.size();
+  if (probes.empty()) return 0.0;
+  std::size_t observed = 0;
+  for (const VoxelKey &probe : probes)
+  {
+    if (explorationMemoryObserved(probe)) ++observed;
+  }
+  return static_cast<double>(observed) / probes.size();
 }
 
 void ExplorerCore::prune(const Vec3 &position)
@@ -871,11 +1003,42 @@ void ExplorerCore::updateVisitMemory(const Vec3 &position)
 
 void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
 {
-  const std::vector<std::vector<VoxelKey>> clusters = frontierClusters();
+  std::vector<std::vector<VoxelKey>> clusters = frontierClusters();
   valid_cluster_frontiers_.clear();
   for (const std::vector<VoxelKey> &cluster : clusters)
     valid_cluster_frontiers_.insert(
         valid_cluster_frontiers_.end(), cluster.begin(), cluster.end());
+
+  stats_.historical_clusters_checked = 0;
+  stats_.historical_clusters_observed = 0;
+  stats_.rejected_historical_clusters = 0;
+  stats_.historical_probe_cells = 0;
+  if (config_.exploration_memory_enabled)
+  {
+    clusters.erase(
+        std::remove_if(
+            clusters.begin(), clusters.end(),
+            [this](const std::vector<VoxelKey> &cluster)
+            {
+              std::size_t probe_cells = 0;
+              const double observed_ratio =
+                  clusterHistoricalObservedRatio(cluster, &probe_cells);
+              ++stats_.historical_clusters_checked;
+              stats_.historical_probe_cells += probe_cells;
+              const bool historically_observed =
+                  probe_cells > 0 &&
+                  observed_ratio + 1e-9 >=
+                      config_.frontier_history_observed_ratio;
+              if (historically_observed)
+                ++stats_.historical_clusters_observed;
+              if (!config_.exploration_memory_filter_enabled ||
+                  !historically_observed)
+                return false;
+              ++stats_.rejected_historical_clusters;
+              return true;
+            }),
+        clusters.end());
+  }
 
   pruneFailedGoals(timestamp);
   const bool had_goal = decision_.valid;

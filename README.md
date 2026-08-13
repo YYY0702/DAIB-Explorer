@@ -6,6 +6,12 @@ coarse trajectory-visit memory, PVBSM structural memory and single-UAV goal
 selection. FAST-LIVO2 remains responsible only for localization/mapping and
 publishes observations through standard ROS messages.
 
+Explorer also keeps a mission-lifetime coarse observation memory. It records
+cells traversed by the already budgeted LiDAR rays and requires observations
+from multiple distinct cloud frames before a cell becomes stable. This memory
+only measures historical novelty; it is never used as current free-space or
+collision evidence.
+
 ## Why it is a separate process
 
 - FAST-LIVO2 stays on its real-time LIO/VIO path even if frontier extraction is
@@ -26,6 +32,11 @@ The internal schedule is deliberately multi-rate:
 | Goal candidate evaluation/replanning | 1 Hz |
 | Coarse trajectory-visit memory | 1 Hz |
 
+Mission-lifetime observation memory updates with every accepted cloud because
+it reuses the same bounded ray set as occupancy integration. Per-frame
+deduplication prevents repeated points in one cloud from satisfying the stable
+observation threshold.
+
 Dirty cells accumulate in a deduplicated set between frontier cycles, so the
 lower frontier rate does not discard occupancy changes.
 
@@ -35,10 +46,17 @@ least ten planning voxels. Frontier validity itself remains based on face-only
 6-neighbor occupancy. One observation pose is searched in known free space for
 each cluster, and a free frontier voxel is used as a conservative fallback when
 sparse rays cannot support the ideal standoff pose. The candidate layer retains
-only the required clearance, distance, relative-height, known-free-ratio and
-120-degree safety bounds.
+only the required clearance, distance, relative-height and known-free-ratio
+constraints; heading is retained as a soft rotation cost.
 Inside those bounds, information and PVBSM novelty are balanced against
 continuous distance and heading costs instead of hard preference tiers.
+
+Historical filtering is deployed in two phases. With the default
+`exploration_memory_filter_enabled: false`, Explorer records memory and reports
+how many clusters would be classified as historical without changing goal
+selection. After flight validation, enabling the filter removes clusters whose
+unknown-side probes are at least 70 percent stably observed. The raw valid
+cluster topic remains unchanged for before/after diagnosis.
 
 Vertical motion is limited relative to the current UAV pose rather than a
 fixed map altitude: with the default `max_goal_vertical_distance_m: 3.0`, a
