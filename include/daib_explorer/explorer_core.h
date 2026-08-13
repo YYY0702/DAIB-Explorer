@@ -81,8 +81,9 @@ struct ExplorerConfig
   double min_known_free_path_ratio = 0.5;
   double goal_switch_margin = 0.15;
 
-  // DAIB-MCSVF: cluster connected frontier voxels, then place one safe
-  // viewpoint in known free space for each cluster before scoring.
+  // DAIB-MCSVF: cluster edge-connected frontier voxels with 18-neighbor
+  // connectivity, then place one safe viewpoint in known free space for each
+  // cluster before scoring. Frontier validity itself remains 6-neighbor.
   // frontier_cluster_size_m is retained for configuration compatibility; the
   // current cluster definition is based on planning-voxel connectivity.
   double frontier_cluster_size_m = 2.0;

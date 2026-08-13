@@ -47,6 +47,34 @@ TEST(ExplorerCore, SeparatesDisconnectedFrontiersInsideLegacyMetricBucket)
   EXPECT_EQ(explorer.stats().frontier_components, 2U);
 }
 
+TEST(ExplorerCore, JoinsFrontiersThatTouchAlongAnEdge)
+{
+  ExplorerConfig config;
+  config.min_frontier_cluster_cells = 1;
+  ExplorerCore explorer(config);
+  ExplorerCoreTestPeer::setFrontiers(
+      explorer, {{0, 0, 0}, {1, 1, 0}});
+
+  const auto clusters = ExplorerCoreTestPeer::clusters(explorer);
+
+  ASSERT_EQ(clusters.size(), 1U);
+  EXPECT_EQ(clusters.front().size(), 2U);
+}
+
+TEST(ExplorerCore, KeepsCornerOnlyFrontiersSeparate)
+{
+  ExplorerConfig config;
+  config.min_frontier_cluster_cells = 1;
+  ExplorerCore explorer(config);
+  ExplorerCoreTestPeer::setFrontiers(
+      explorer, {{0, 0, 0}, {1, 1, 1}});
+
+  const auto clusters = ExplorerCoreTestPeer::clusters(explorer);
+
+  EXPECT_EQ(clusters.size(), 2U);
+  EXPECT_EQ(explorer.stats().frontier_components, 2U);
+}
+
 TEST(ExplorerCore, JoinsConnectedFrontiersAcrossLegacyMetricBucketBoundary)
 {
   ExplorerConfig config;

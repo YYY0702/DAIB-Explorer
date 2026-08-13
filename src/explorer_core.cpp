@@ -11,9 +11,19 @@ namespace daib_explorer
 {
 namespace
 {
-constexpr int kNeighbors[6][3] = {
+// Face adjacency is used for frontier semantics and local surface direction.
+constexpr int kFaceNeighbors[6][3] = {
     {1, 0, 0}, {-1, 0, 0}, {0, 1, 0},
     {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
+
+// Cluster connectivity also accepts edge-touching voxels. Corner-only
+// contact is intentionally excluded so unrelated boundaries are not merged.
+constexpr int kClusterNeighbors[18][3] = {
+    {1, 0, 0},   {-1, 0, 0},  {0, 1, 0},   {0, -1, 0},
+    {0, 0, 1},   {0, 0, -1}, {1, 1, 0},   {1, -1, 0},
+    {-1, 1, 0},  {-1, -1, 0}, {1, 0, 1},  {1, 0, -1},
+    {-1, 0, 1},  {-1, 0, -1}, {0, 1, 1},  {0, 1, -1},
+    {0, -1, 1}, {0, -1, -1}};
 
 Vec3 subtract(const Vec3 &a, const Vec3 &b)
 {
@@ -190,7 +200,7 @@ bool ExplorerCore::isFrontierVoxel(const VoxelKey &voxel) const
 
   bool has_unknown_neighbor = false;
   int free_neighbors = 0;
-  for (const auto &offset : kNeighbors)
+  for (const auto &offset : kFaceNeighbors)
   {
     const int neighbor_state =
         cellState({voxel.x + offset[0], voxel.y + offset[1],
@@ -449,7 +459,7 @@ bool ExplorerCore::pathReachable(const Vec3 &start, const Vec3 &end,
     if (best_iter == best_g.end() || current.g != best_iter->second) continue;
     if (current.key == goal_key) return true;
     ++expansions;
-    for (const auto &offset : kNeighbors)
+    for (const auto &offset : kFaceNeighbors)
     {
       const VoxelKey next{current.key.x + offset[0],
                           current.key.y + offset[1],
@@ -527,7 +537,7 @@ std::vector<std::vector<VoxelKey>> ExplorerCore::frontierClusters()
       const VoxelKey current = open.front();
       open.pop();
       component.push_back(current);
-      for (const auto &offset : kNeighbors)
+      for (const auto &offset : kClusterNeighbors)
       {
         const VoxelKey neighbor{current.x + offset[0],
                                 current.y + offset[1],
@@ -565,7 +575,7 @@ bool ExplorerCore::makeSafeViewpoint(const std::vector<VoxelKey> &cluster,
     centroid.x += point.x;
     centroid.y += point.y;
     centroid.z += point.z;
-    for (const auto &offset : kNeighbors)
+    for (const auto &offset : kFaceNeighbors)
     {
       if (cellState({voxel.x + offset[0], voxel.y + offset[1],
                      voxel.z + offset[2]}) < 0)
@@ -736,7 +746,7 @@ double ExplorerCore::frontierScore(const VoxelKey &voxel) const
 {
   int unknown_neighbors = 0;
   int occupied_neighbors = 0;
-  for (const auto &offset : kNeighbors)
+  for (const auto &offset : kFaceNeighbors)
   {
     const int state = cellState(
         {voxel.x + offset[0], voxel.y + offset[1], voxel.z + offset[2]});

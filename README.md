@@ -30,11 +30,13 @@ Dirty cells accumulate in a deduplicated set between frontier cycles, so the
 lower frontier rate does not discard occupancy changes.
 
 Goal selection uses DAIB-MCSVF (Motion-Constrained Safe-Viewpoint Frontier):
-raw frontier voxels are grouped into 2 m local clusters, one observation pose
-is searched in known free space for each cluster, and a free frontier voxel is
-used as a conservative fallback when sparse rays cannot support the ideal
-standoff pose. The candidate layer retains only the required clearance,
-distance, relative-height, known-free-ratio and 120-degree safety bounds.
+raw frontier voxels are grouped into 18-neighbor connected components with at
+least ten planning voxels. Frontier validity itself remains based on face-only
+6-neighbor occupancy. One observation pose is searched in known free space for
+each cluster, and a free frontier voxel is used as a conservative fallback when
+sparse rays cannot support the ideal standoff pose. The candidate layer retains
+only the required clearance, distance, relative-height, known-free-ratio and
+120-degree safety bounds.
 Inside those bounds, information and PVBSM novelty are balanced against
 continuous distance and heading costs instead of hard preference tiers.
 
