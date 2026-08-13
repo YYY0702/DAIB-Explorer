@@ -58,14 +58,14 @@ planning_voxel_size_m: 0.5
 planning_sensor_range_m: 20.0
 planning_map_radius_m: 40.0
 planning_prune_budget: 256
-max_raycasts_per_update: 64
+max_raycasts_per_update: 128
 max_ray_steps: 64
-frontier_update_budget: 512
+frontier_update_budget: 1024
 frontier_evaluation_budget: 1200
 # Multi-rate scheduling: safety-relevant occupancy and blocked-goal checks run
 # on every accepted map update; the following heavier tasks run independently.
-frontier_update_rate_hz: 2.0
-goal_evaluation_rate_hz: 1.0
+frontier_update_rate_hz: 5.0
+goal_evaluation_rate_hz: 2.0
 long_term_update_rate_hz: 1.0
 
 # Low-frequency trajectory-visit memory used by frontier novelty scoring.
