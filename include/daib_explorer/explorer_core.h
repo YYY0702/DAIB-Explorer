@@ -82,20 +82,25 @@ struct ExplorerConfig
   double goal_switch_margin = 0.15;
 
   // DAIB-MCSVF: cluster edge-connected frontier voxels with 18-neighbor
-  // connectivity, then place one safe viewpoint in known free space for each
-  // cluster before scoring. Frontier validity itself remains 6-neighbor.
+  // connectivity, then place multiple safe viewpoints in known free space for
+  // each cluster before scoring. Frontier validity itself remains 6-neighbor.
   // frontier_cluster_size_m is retained for configuration compatibility; the
   // current cluster definition is based on planning-voxel connectivity.
   double frontier_cluster_size_m = 2.0;
   int min_frontier_cluster_cells = 10;
   double viewpoint_standoff_m = 1.0;
   double viewpoint_search_radius_m = 2.0;
+  double viewpoint_same_height_tolerance_m = 0.5;
   double min_wall_clearance_m = 0.5;
+  int max_viewpoints_per_cluster = 8;
   int max_safe_viewpoint_candidates = 64;
   double preferred_heading_change_deg = 60.0;
+  // Retained for launch/configuration compatibility. Heading is now a soft
+  // rotation cost rather than a hard candidate rejection.
   double max_heading_change_deg = 120.0;
   double distance_cost_weight = 0.5;
   double heading_cost_weight = 3.0;
+  double arrival_yaw_cost_weight = 0.5;
 
   // Bounded reachability prevents straight-line visibility from rejecting a
   // valid goal around a corner. Direct free lines do not invoke A*.
@@ -272,8 +277,16 @@ private:
   bool pathReachable(const Vec3 &start, const Vec3 &end,
                      int max_expansions, bool *budget_exhausted = nullptr) const;
   bool hasWallClearance(const VoxelKey &voxel) const;
-  bool makeSafeViewpoint(const std::vector<VoxelKey> &cluster,
-                         Vec3 &viewpoint, VoxelKey &representative) const;
+  struct SafeViewpoint
+  {
+    Vec3 point;
+    Vec3 observation_target;
+    VoxelKey representative;
+  };
+  std::vector<SafeViewpoint> makeSafeViewpoints(
+      const std::vector<VoxelKey> &cluster,
+      const Vec3 &position,
+      int limit) const;
   std::vector<std::vector<VoxelKey>> frontierClusters();
   double currentYaw() const;
   double headingChange(const Vec3 &position, const Vec3 &goal) const;

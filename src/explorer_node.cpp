@@ -339,9 +339,15 @@ private:
     private_nh_.param("viewpoint_search_radius_m",
                       config.viewpoint_search_radius_m,
                       config.viewpoint_search_radius_m);
+    private_nh_.param("viewpoint_same_height_tolerance_m",
+                      config.viewpoint_same_height_tolerance_m,
+                      config.viewpoint_same_height_tolerance_m);
     private_nh_.param("min_wall_clearance_m",
                       config.min_wall_clearance_m,
                       config.min_wall_clearance_m);
+    private_nh_.param("max_viewpoints_per_cluster",
+                      config.max_viewpoints_per_cluster,
+                      config.max_viewpoints_per_cluster);
     private_nh_.param("max_safe_viewpoint_candidates",
                       config.max_safe_viewpoint_candidates,
                       config.max_safe_viewpoint_candidates);
@@ -357,6 +363,9 @@ private:
     private_nh_.param("heading_cost_weight",
                       config.heading_cost_weight,
                       config.heading_cost_weight);
+    private_nh_.param("arrival_yaw_cost_weight",
+                      config.arrival_yaw_cost_weight,
+                      config.arrival_yaw_cost_weight);
     private_nh_.param("reachability_enabled",
                       config.reachability_enabled,
                       config.reachability_enabled);

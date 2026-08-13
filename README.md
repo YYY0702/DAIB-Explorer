@@ -85,6 +85,20 @@ vehicle position, capped at 6000 points by default. This limits ROS
 serialization and local-planner work without pruning the Explorer's rolling
 occupancy map or frontier set.
 
+Each retained frontier cluster can contribute up to
+`max_viewpoints_per_cluster` known-free viewpoints. Candidates within
+`viewpoint_same_height_tolerance_m` of the current odometry height are used
+whenever any are available; bounded vertical candidates are considered only
+when no same-height candidate survives. Distance, wall clearance, line of
+sight, known-free path ratio and failed-goal cooldown remain hard constraints.
+Heading is a score cost instead of a hard rejection.
+
+The goal quaternion contains zero roll and pitch. Its yaw points from the
+selected viewpoint toward that viewpoint's frontier/unknown observation
+target, rather than along the path from the current vehicle position to the
+viewpoint. Downstream bridge, planner and controller support for this arrival
+yaw must be validated separately.
+
 DAIB-PVBSM runs on a separate low-rate subscriber callback. It stores
 versioned plane primitives and residual voxels by source/root identity, rejects
 stale updates, applies deletion records and groups roots into spatial

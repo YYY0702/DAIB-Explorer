@@ -98,19 +98,24 @@ min_known_free_path_ratio: 0.5
 goal_switch_margin: 0.15
 
 # DAIB-MCSVF: form 18-neighbor connected frontier components, reject components
-# with fewer than ten planning voxels, then place one known-free viewpoint for
-# each retained boundary. Frontier validity remains 6-neighbor. Kept for
+# with fewer than ten planning voxels, then place multiple known-free
+# viewpoints for each retained boundary. Frontier validity remains 6-neighbor.
+# Prefer viewpoints close to current odom.z and use height changes only when
+# no same-height safe candidate exists. Kept for
 # compatibility; cluster size is not used by the connected-component logic.
 frontier_cluster_size_m: 2.0
 min_frontier_cluster_cells: 10
 viewpoint_standoff_m: 1.0
 viewpoint_search_radius_m: 2.0
+viewpoint_same_height_tolerance_m: 0.5
 min_wall_clearance_m: 0.5
+max_viewpoints_per_cluster: 8
 max_safe_viewpoint_candidates: 64
 preferred_heading_change_deg: 60.0
 max_heading_change_deg: 120.0
 distance_cost_weight: 0.5
 heading_cost_weight: 3.0
+arrival_yaw_cost_weight: 0.5
 
 # Bounded A* is used only to confirm whether the active goal is persistently
 # blocked. It is not run for every frontier candidate.

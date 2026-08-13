@@ -366,7 +366,7 @@ TEST(ExplorerCore, AcceptsSingleVoxelClusterAndStandoffFallback)
   EXPECT_TRUE(decision.valid);
 }
 
-TEST(ExplorerCore, EnforcesFinalDistanceAndHeadingBounds)
+TEST(ExplorerCore, EnforcesFinalDistanceAndUsesHeadingAsSoftCost)
 {
   ExplorerConfig config;
   config.min_goal_distance_m = 1.0;
@@ -384,10 +384,11 @@ TEST(ExplorerCore, EnforcesFinalDistanceAndHeadingBounds)
 
   ExplorerCore reverse(config);
   reverse.update({0.0, 0.0, 0.0}, {}, {{-8.0, 0.0, 0.0}}, 1.0);
-  GoalDecision heading_rejected;
-  ASSERT_TRUE(reverse.consumeDecision(heading_rejected));
-  EXPECT_FALSE(heading_rejected.valid);
-  EXPECT_GT(reverse.stats().rejected_heading, 0U);
+  GoalDecision reverse_goal;
+  ASSERT_TRUE(reverse.consumeDecision(reverse_goal));
+  EXPECT_TRUE(reverse_goal.valid);
+  EXPECT_LT(reverse_goal.position.x, 0.0);
+  EXPECT_EQ(reverse.stats().rejected_heading, 0U);
 
 }
 
@@ -405,14 +406,16 @@ TEST(ExplorerCore, UsesSymmetricRelativeVerticalBound)
   GoalDecision high_goal;
   ASSERT_TRUE(above.consumeDecision(high_goal));
   ASSERT_TRUE(high_goal.valid);
-  EXPECT_LE(std::fabs(high_goal.position.z - high_position.z), 3.0);
+  EXPECT_LE(std::fabs(high_goal.position.z - high_position.z),
+            config.viewpoint_same_height_tolerance_m + 1e-9);
 
   ExplorerCore below(config);
   below.update(high_position, {}, {{8.0, 0.0, 8.0}}, 1.0);
   GoalDecision low_goal;
   ASSERT_TRUE(below.consumeDecision(low_goal));
   ASSERT_TRUE(low_goal.valid);
-  EXPECT_LE(std::fabs(low_goal.position.z - high_position.z), 3.0);
+  EXPECT_LE(std::fabs(low_goal.position.z - high_position.z),
+            config.viewpoint_same_height_tolerance_m + 1e-9);
 }
 
 TEST(ExplorerCore, RequiresConsecutiveObstacleConfirmation)
@@ -512,29 +515,47 @@ TEST(ExplorerCore, ClearsStaleOccupancyAtCurrentVehicleVoxel)
   EXPECT_EQ(explorer.stats().occupied_cells, 0U);
 }
 
-TEST(ExplorerCore, RejectsGoalsBeyondMaximumHeadingChange)
+TEST(ExplorerCore, PrefersCandidateWithLowerRotationCost)
 {
   ExplorerConfig config;
   config.min_goal_distance_m = 1.0;
   config.max_goal_distance_m = 10.0;
+  config.min_frontier_cluster_cells = 1;
 
-  ExplorerCore facing_positive_x(config);
-  facing_positive_x.update(
-      {0.0, 0.0, 0.0}, {}, {{-8.0, 0.0, 0.0}}, 1.0);
-  GoalDecision rejected;
-  ASSERT_TRUE(facing_positive_x.consumeDecision(rejected));
-  EXPECT_FALSE(rejected.valid);
+  ExplorerCore explorer(config);
+  explorer.update(
+      {0.0, 0.0, 0.0}, {},
+      {{8.0, 0.0, 0.0}, {-8.0, 0.0, 0.0}}, 1.0);
+  GoalDecision selected;
+  ASSERT_TRUE(explorer.consumeDecision(selected));
+  ASSERT_TRUE(selected.valid);
+  EXPECT_GT(selected.position.x, 0.0);
+  EXPECT_LE(selected.heading_change_deg,
+            config.preferred_heading_change_deg);
+}
 
-  ExplorerCore facing_negative_x(config);
-  facing_negative_x.update(
+TEST(ExplorerCore, AcceptsReverseFrontierWithObservationYaw)
+{
+  ExplorerConfig config;
+  config.min_goal_distance_m = 1.0;
+  config.max_goal_distance_m = 10.0;
+  config.min_frontier_cluster_cells = 1;
+
+  ExplorerCore explorer(config);
+  explorer.update(
       {0.0, 0.0, 0.0}, {0.0, 0.0, 1.0, 0.0},
       {{-8.0, 0.0, 0.0}}, 1.0);
   GoalDecision accepted;
-  ASSERT_TRUE(facing_negative_x.consumeDecision(accepted));
+  ASSERT_TRUE(explorer.consumeDecision(accepted));
   ASSERT_TRUE(accepted.valid);
   EXPECT_LT(accepted.position.x, 0.0);
-  EXPECT_GT(facing_negative_x.stats().frontier_clusters, 0U);
-  EXPECT_GT(facing_negative_x.stats().safe_viewpoint_candidates, 0U);
+  const double travel_yaw =
+      std::atan2(accepted.position.y, accepted.position.x);
+  EXPECT_GT(std::fabs(std::remainder(accepted.yaw - travel_yaw,
+                                     2.0 * 3.14159265358979323846)),
+            2.0);
+  EXPECT_GT(explorer.stats().frontier_clusters, 0U);
+  EXPECT_GT(explorer.stats().safe_viewpoint_candidates, 0U);
 }
 
 TEST(PvbsmMemory, AppliesVersionsDeletionAndNegativeSubmaps)

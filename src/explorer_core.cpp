@@ -41,6 +41,18 @@ double clamp(double value, double low, double high)
 {
   return std::max(low, std::min(high, value));
 }
+
+double yawBetween(const Vec3 &from, const Vec3 &to)
+{
+  return std::atan2(to.y - from.y, to.x - from.x);
+}
+
+double yawDifferenceDeg(double left, double right)
+{
+  constexpr double kPi = 3.14159265358979323846;
+  return std::fabs(std::remainder(left - right, 2.0 * kPi)) *
+         180.0 / kPi;
+}
 }  // namespace
 
 std::size_t VoxelKeyHash::operator()(const VoxelKey &key) const
@@ -119,8 +131,12 @@ void ExplorerCore::sanitizeConfig()
   config_.viewpoint_search_radius_m =
       std::max(config_.planning_voxel_size_m,
                config_.viewpoint_search_radius_m);
+  config_.viewpoint_same_height_tolerance_m =
+      std::max(0.0, config_.viewpoint_same_height_tolerance_m);
   config_.min_wall_clearance_m =
       std::max(0.0, config_.min_wall_clearance_m);
+  config_.max_viewpoints_per_cluster =
+      std::max(1, config_.max_viewpoints_per_cluster);
   config_.max_safe_viewpoint_candidates =
       std::max(1, config_.max_safe_viewpoint_candidates);
   config_.preferred_heading_change_deg =
@@ -130,6 +146,8 @@ void ExplorerCore::sanitizeConfig()
             std::max(1.0, config_.preferred_heading_change_deg), 180.0);
   config_.distance_cost_weight = std::max(0.0, config_.distance_cost_weight);
   config_.heading_cost_weight = std::max(0.0, config_.heading_cost_weight);
+  config_.arrival_yaw_cost_weight =
+      std::max(0.0, config_.arrival_yaw_cost_weight);
   config_.reachability_max_expansions =
       std::max(32, config_.reachability_max_expansions);
   config_.goal_reachability_check_rate_hz =
@@ -562,116 +580,176 @@ std::vector<std::vector<VoxelKey>> ExplorerCore::frontierClusters()
   return clusters;
 }
 
-bool ExplorerCore::makeSafeViewpoint(const std::vector<VoxelKey> &cluster,
-                                     Vec3 &viewpoint,
-                                     VoxelKey &representative) const
+std::vector<ExplorerCore::SafeViewpoint> ExplorerCore::makeSafeViewpoints(
+    const std::vector<VoxelKey> &cluster,
+    const Vec3 &position,
+    int limit) const
 {
-  if (cluster.empty()) return false;
-  Vec3 centroid;
-  Vec3 unknown_direction;
-  for (const VoxelKey &voxel : cluster)
+  std::vector<SafeViewpoint> viewpoints;
+  if (cluster.empty() || limit <= 0) return viewpoints;
+
+  std::vector<VoxelKey> anchor_pool = cluster;
+  std::sort(
+      anchor_pool.begin(), anchor_pool.end(),
+      [this, &position](const VoxelKey &left, const VoxelKey &right)
+      {
+        const double left_distance =
+            distance(center(left, config_.planning_voxel_size_m), position);
+        const double right_distance =
+            distance(center(right, config_.planning_voxel_size_m), position);
+        if (left_distance != right_distance)
+          return left_distance < right_distance;
+        if (left.x != right.x) return left.x < right.x;
+        if (left.y != right.y) return left.y < right.y;
+        return left.z < right.z;
+      });
+
+  std::vector<VoxelKey> anchors;
+  anchors.reserve(std::min<std::size_t>(
+      anchor_pool.size(), static_cast<std::size_t>(limit)));
+  anchors.push_back(anchor_pool.front());
+  while (anchors.size() < anchor_pool.size() &&
+         static_cast<int>(anchors.size()) < limit)
   {
-    const Vec3 point = center(voxel, config_.planning_voxel_size_m);
-    centroid.x += point.x;
-    centroid.y += point.y;
-    centroid.z += point.z;
+    const VoxelKey *best = nullptr;
+    double best_separation = -1.0;
+    for (const VoxelKey &voxel : anchor_pool)
+    {
+      if (std::find(anchors.begin(), anchors.end(), voxel) != anchors.end())
+        continue;
+      double nearest_anchor = std::numeric_limits<double>::infinity();
+      const Vec3 point = center(voxel, config_.planning_voxel_size_m);
+      for (const VoxelKey &anchor : anchors)
+        nearest_anchor = std::min(
+            nearest_anchor,
+            distance(point, center(anchor, config_.planning_voxel_size_m)));
+      if (nearest_anchor > best_separation)
+      {
+        best_separation = nearest_anchor;
+        best = &voxel;
+      }
+    }
+    if (!best) break;
+    anchors.push_back(*best);
+  }
+
+  std::unordered_set<VoxelKey, VoxelKeyHash> used_viewpoints;
+  const int search_radius = static_cast<int>(std::ceil(
+      config_.viewpoint_search_radius_m / config_.planning_voxel_size_m));
+  for (const VoxelKey &anchor : anchors)
+  {
+    const Vec3 target = center(anchor, config_.planning_voxel_size_m);
+    Vec3 unknown_direction;
     for (const auto &offset : kFaceNeighbors)
     {
-      if (cellState({voxel.x + offset[0], voxel.y + offset[1],
-                     voxel.z + offset[2]}) < 0)
+      if (cellState({anchor.x + offset[0], anchor.y + offset[1],
+                     anchor.z + offset[2]}) < 0)
       {
         unknown_direction.x += offset[0];
         unknown_direction.y += offset[1];
         unknown_direction.z += offset[2];
       }
     }
-  }
-  const double inverse_size = 1.0 / cluster.size();
-  centroid.x *= inverse_size;
-  centroid.y *= inverse_size;
-  centroid.z *= inverse_size;
-  representative = cluster.front();
-  double representative_distance = std::numeric_limits<double>::infinity();
-  for (const VoxelKey &voxel : cluster)
-  {
-    const double candidate_distance =
-        distance(center(voxel, config_.planning_voxel_size_m), centroid);
-    if (candidate_distance < representative_distance)
+    const double direction_norm = std::sqrt(
+        unknown_direction.x * unknown_direction.x +
+        unknown_direction.y * unknown_direction.y +
+        unknown_direction.z * unknown_direction.z);
+    Vec3 observation_target = target;
+    Vec3 desired = target;
+    if (direction_norm >= 1e-6)
     {
-      representative_distance = candidate_distance;
-      representative = voxel;
+      observation_target.x += config_.planning_voxel_size_m *
+                              unknown_direction.x / direction_norm;
+      observation_target.y += config_.planning_voxel_size_m *
+                              unknown_direction.y / direction_norm;
+      observation_target.z += config_.planning_voxel_size_m *
+                              unknown_direction.z / direction_norm;
+      desired.x -= config_.viewpoint_standoff_m *
+                   unknown_direction.x / direction_norm;
+      desired.y -= config_.viewpoint_standoff_m *
+                   unknown_direction.y / direction_norm;
+      desired.z -= config_.viewpoint_standoff_m *
+                   unknown_direction.z / direction_norm;
     }
-  }
 
-  const double direction_norm = std::sqrt(
-      unknown_direction.x * unknown_direction.x +
-      unknown_direction.y * unknown_direction.y +
-      unknown_direction.z * unknown_direction.z);
-  Vec3 desired = centroid;
-  if (direction_norm >= 1e-6)
-  {
-    desired.x -= config_.viewpoint_standoff_m *
-                 unknown_direction.x / direction_norm;
-    desired.y -= config_.viewpoint_standoff_m *
-                 unknown_direction.y / direction_norm;
-    desired.z -= config_.viewpoint_standoff_m *
-                 unknown_direction.z / direction_norm;
-  }
-  const VoxelKey desired_key = key(desired, config_.planning_voxel_size_m);
-  const int search_radius = static_cast<int>(std::ceil(
-      config_.viewpoint_search_radius_m / config_.planning_voxel_size_m));
-  for (int shell = 0; shell <= search_radius; ++shell)
-  {
-    for (int dx = -shell; dx <= shell; ++dx)
+    const VoxelKey desired_key = key(desired, config_.planning_voxel_size_m);
+    bool found = false;
+    VoxelKey best_key;
+    int best_height_tier = 2;
+    double best_vertical = std::numeric_limits<double>::infinity();
+    double best_offset = std::numeric_limits<double>::infinity();
+    for (int dx = -search_radius; dx <= search_radius; ++dx)
     {
-      for (int dy = -shell; dy <= shell; ++dy)
+      for (int dy = -search_radius; dy <= search_radius; ++dy)
       {
-        for (int dz = -shell; dz <= shell; ++dz)
+        for (int dz = -search_radius; dz <= search_radius; ++dz)
         {
-          if (std::max({std::abs(dx), std::abs(dy), std::abs(dz)}) != shell)
-            continue;
           const VoxelKey candidate_key{desired_key.x + dx,
                                        desired_key.y + dy,
                                        desired_key.z + dz};
-          if (cellState(candidate_key) != 0 ||
+          if (used_viewpoints.find(candidate_key) != used_viewpoints.end() ||
+              cellState(candidate_key) != 0 ||
               !hasWallClearance(candidate_key))
             continue;
           const Vec3 candidate =
               center(candidate_key, config_.planning_voxel_size_m);
-          if (segmentBlocked(candidate, centroid)) continue;
-          viewpoint = candidate;
-          return true;
+          if (segmentBlocked(candidate, target)) continue;
+          const double vertical = std::fabs(candidate.z - position.z);
+          const int height_tier =
+              vertical <= config_.viewpoint_same_height_tolerance_m ? 0 : 1;
+          const double offset = distance(candidate, desired);
+          if (!found || height_tier < best_height_tier ||
+              (height_tier == best_height_tier && vertical < best_vertical) ||
+              (height_tier == best_height_tier && vertical == best_vertical &&
+               offset < best_offset))
+          {
+            found = true;
+            best_key = candidate_key;
+            best_height_tier = height_tier;
+            best_vertical = vertical;
+            best_offset = offset;
+          }
         }
       }
     }
+    if (!found)
+    {
+      // Sparse ray maps may not contain the ideal standoff voxel. Preserve
+      // the old safe fallback to a known-free frontier voxel, while still
+      // keeping viewpoints unique across anchors.
+      std::vector<std::pair<double, VoxelKey>> fallback;
+      fallback.reserve(cluster.size());
+      for (const VoxelKey &voxel : cluster)
+      {
+        if (used_viewpoints.find(voxel) != used_viewpoints.end() ||
+            cellState(voxel) != 0 || !hasWallClearance(voxel))
+          continue;
+        fallback.emplace_back(
+            distance(center(voxel, config_.planning_voxel_size_m), desired),
+            voxel);
+      }
+      std::sort(
+          fallback.begin(), fallback.end(),
+          [](const std::pair<double, VoxelKey> &left,
+             const std::pair<double, VoxelKey> &right)
+          {
+            if (left.first != right.first) return left.first < right.first;
+            if (left.second.x != right.second.x)
+              return left.second.x < right.second.x;
+            if (left.second.y != right.second.y)
+              return left.second.y < right.second.y;
+            return left.second.z < right.second.z;
+          });
+      if (fallback.empty()) continue;
+      best_key = fallback.front().second;
+    }
+    used_viewpoints.insert(best_key);
+    viewpoints.push_back(
+        {center(best_key, config_.planning_voxel_size_m),
+         observation_target,
+         anchor});
   }
-
-  // Sparse ray maps do not always contain the ideal standoff voxel. Fall
-  // back to a free frontier voxel in this cluster instead of dropping all of
-  // its information. Distance, heading and relative-height checks are still
-  // applied by updateDecision(), and occupied voxels are never returned.
-  std::vector<std::pair<double, VoxelKey>> fallback;
-  fallback.reserve(cluster.size());
-  for (const VoxelKey &voxel : cluster)
-  {
-    if (cellState(voxel) != 0 || !hasWallClearance(voxel)) continue;
-    fallback.emplace_back(
-        distance(center(voxel, config_.planning_voxel_size_m), desired),
-        voxel);
-  }
-  std::sort(fallback.begin(), fallback.end(),
-            [](const std::pair<double, VoxelKey> &left,
-               const std::pair<double, VoxelKey> &right)
-            {
-              return left.first < right.first;
-            });
-  if (!fallback.empty())
-  {
-    representative = fallback.front().second;
-    viewpoint = center(representative, config_.planning_voxel_size_m);
-    return true;
-  }
-  return false;
+  return viewpoints;
 }
 
 double ExplorerCore::currentYaw() const
@@ -841,6 +919,8 @@ void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
     double known_free = 0.0;
     double distance = 0.0;
     double heading_change_deg = 0.0;
+    double observation_yaw = 0.0;
+    double rotation_cost_deg = 0.0;
     int tier = 0;
   };
   std::vector<Candidate> candidates;
@@ -905,54 +985,78 @@ void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
     if (evaluated++ >= budget) break;
     if (static_cast<int>(candidates.size()) >= viewpoint_budget) break;
     const std::vector<VoxelKey> &frontier_cluster = *ordered_cluster.cluster;
-    Vec3 candidate;
-    VoxelKey representative;
-    if (!makeSafeViewpoint(frontier_cluster, candidate, representative))
+    const std::vector<SafeViewpoint> safe_viewpoints = makeSafeViewpoints(
+        frontier_cluster, position, config_.max_viewpoints_per_cluster);
+    if (safe_viewpoints.empty())
     {
       ++stats_.rejected_no_viewpoint;
       continue;
     }
-    const double candidate_distance = distance(candidate, position);
-    if (candidate_distance < config_.min_goal_distance_m ||
-        candidate_distance > max_distance)
+    for (const SafeViewpoint &safe_viewpoint : safe_viewpoints)
     {
-      ++stats_.rejected_distance;
-      continue;
+      if (static_cast<int>(candidates.size()) >= viewpoint_budget) break;
+      const Vec3 &candidate = safe_viewpoint.point;
+      const double candidate_distance = distance(candidate, position);
+      if (candidate_distance < config_.min_goal_distance_m ||
+          candidate_distance > max_distance)
+      {
+        ++stats_.rejected_distance;
+        continue;
+      }
+      const double vertical_distance = std::fabs(candidate.z - position.z);
+      if (vertical_distance > config_.max_goal_vertical_distance_m)
+      {
+        ++stats_.rejected_vertical_distance;
+        continue;
+      }
+      if (nearFailedGoal(candidate))
+      {
+        ++stats_.rejected_failed_goal;
+        continue;
+      }
+      double known_free = 0.0;
+      segmentBlocked(position, candidate, &known_free);
+      if (known_free + 1e-9 < config_.min_known_free_path_ratio)
+      {
+        ++stats_.rejected_known_free_path;
+        continue;
+      }
+      const double travel_yaw = yawBetween(position, candidate);
+      const double heading = yawDifferenceDeg(currentYaw(), travel_yaw);
+      const double observation_yaw =
+          yawBetween(candidate, safe_viewpoint.observation_target);
+      const double rotation_cost =
+          heading + config_.arrival_yaw_cost_weight *
+                        yawDifferenceDeg(travel_yaw, observation_yaw);
+      const bool same_height =
+          vertical_distance <= config_.viewpoint_same_height_tolerance_m;
+      const int tier = same_height
+                           ? (heading <= config_.preferred_heading_change_deg
+                                  ? 0
+                                  : 1)
+                           : 2;
+      candidates.push_back(
+          {safe_viewpoint.representative,
+           candidate,
+           &frontier_cluster,
+           known_free,
+           candidate_distance,
+           heading,
+           observation_yaw,
+           rotation_cost,
+           tier});
     }
-    if (std::fabs(candidate.z - position.z) >
-        config_.max_goal_vertical_distance_m)
-    {
-      ++stats_.rejected_vertical_distance;
-      continue;
-    }
-    const double heading = headingChange(position, candidate);
-    if (heading > config_.max_heading_change_deg)
-    {
-      ++stats_.rejected_heading;
-      continue;
-    }
-    if (nearFailedGoal(candidate))
-    {
-      ++stats_.rejected_failed_goal;
-      continue;
-    }
-    double known_free = 0.0;
-    segmentBlocked(position, candidate, &known_free);
-    if (known_free + 1e-9 < config_.min_known_free_path_ratio)
-    {
-      ++stats_.rejected_known_free_path;
-      continue;
-    }
-    const int tier =
-        heading <= config_.preferred_heading_change_deg ? 0 : 1;
-    candidates.push_back(
-        {representative,
-         candidate,
-         &frontier_cluster,
-         known_free,
-         candidate_distance,
-         heading,
-         tier});
+  }
+  const bool has_same_height_candidate = std::any_of(
+      candidates.begin(), candidates.end(),
+      [](const Candidate &candidate) { return candidate.tier < 2; });
+  if (has_same_height_candidate)
+  {
+    candidates.erase(
+        std::remove_if(
+            candidates.begin(), candidates.end(),
+            [](const Candidate &candidate) { return candidate.tier == 2; }),
+        candidates.end());
   }
   stats_.safe_viewpoint_candidates = candidates.size();
 
@@ -990,6 +1094,7 @@ void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
   double best_score = -std::numeric_limits<double>::infinity();
   Vec3 best;
   double best_heading_change = 0.0;
+  double best_observation_yaw = 0.0;
   bool found = false;
   const std::vector<VoxelKey> *best_cluster = nullptr;
   int selected_tier = -1;
@@ -1010,14 +1115,14 @@ void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
              : 0.0) +
         pvbsm_adjustment -
         config_.distance_cost_weight * candidate.distance -
-        config_.heading_cost_weight * candidate.heading_change_deg /
-            config_.max_heading_change_deg;
+        config_.heading_cost_weight * candidate.rotation_cost_deg / 180.0;
     ++stats_.candidates_scored;
     if (score > best_score)
     {
       best_score = score;
       best = candidate.point;
       best_heading_change = candidate.heading_change_deg;
+      best_observation_yaw = candidate.observation_yaw;
       selected_tier = candidate.tier;
       best_cluster = candidate.cluster;
       found = true;
@@ -1062,6 +1167,11 @@ void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
     segmentBlocked(position, decision_.position, &current_known_free);
     const double current_distance = distance(position, decision_.position);
     const double current_heading = headingChange(position, decision_.position);
+    const double current_travel_yaw = yawBetween(position, decision_.position);
+    const double current_rotation_cost =
+        current_heading + config_.arrival_yaw_cost_weight *
+                              yawDifferenceDeg(current_travel_yaw,
+                                               decision_.yaw);
     const double current_score =
         frontierScore(key(decision_.position, config_.planning_voxel_size_m)) +
         (degenerate_
@@ -1072,8 +1182,7 @@ void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
                    pvbsm_hints[current_goal_hint_index])
              : 0.0) -
         config_.distance_cost_weight * current_distance -
-        config_.heading_cost_weight * current_heading /
-            config_.max_heading_change_deg;
+        config_.heading_cost_weight * current_rotation_cost / 180.0;
     const double margin =
         degenerate_ ? config_.degenerate_goal_switch_margin
                     : config_.goal_switch_margin;
@@ -1088,7 +1197,7 @@ void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
   decision_.valid = true;
   decision_.updated = true;
   decision_.position = best;
-  decision_.yaw = std::atan2(best.y - position.y, best.x - position.x);
+  decision_.yaw = best_observation_yaw;
   decision_.score = best_score;
   decision_.planning_time_ms = elapsed.count();
   decision_.constraint_tier = selected_tier;

@@ -10,8 +10,11 @@
   <arg name="max_goal_vertical_distance_m" default="3.0"/>
   <arg name="min_known_free_path_ratio" default="0.5"/>
   <arg name="viewpoint_standoff_m" default="1.0"/>
+  <arg name="viewpoint_same_height_tolerance_m" default="0.5"/>
   <arg name="min_wall_clearance_m" default="0.5"/>
+  <arg name="max_viewpoints_per_cluster" default="8"/>
   <arg name="max_heading_change_deg" default="120.0"/>
+  <arg name="arrival_yaw_cost_weight" default="0.5"/>
   <arg name="allow_periodic_goal_switch" default="false"/>
   <arg name="goal_timeout_s" default="0.0"/>
   <arg name="goal_blocked_confirm_updates" default="10"/>
@@ -45,10 +48,16 @@
            value="$(arg min_known_free_path_ratio)" type="double"/>
     <param name="viewpoint_standoff_m"
            value="$(arg viewpoint_standoff_m)" type="double"/>
+    <param name="viewpoint_same_height_tolerance_m"
+           value="$(arg viewpoint_same_height_tolerance_m)" type="double"/>
     <param name="min_wall_clearance_m"
            value="$(arg min_wall_clearance_m)" type="double"/>
+    <param name="max_viewpoints_per_cluster"
+           value="$(arg max_viewpoints_per_cluster)" type="int"/>
     <param name="max_heading_change_deg"
            value="$(arg max_heading_change_deg)" type="double"/>
+    <param name="arrival_yaw_cost_weight"
+           value="$(arg arrival_yaw_cost_weight)" type="double"/>
     <param name="allow_periodic_goal_switch"
            value="$(arg allow_periodic_goal_switch)" type="bool"/>
     <param name="goal_timeout_s" value="$(arg goal_timeout_s)" type="double"/>
