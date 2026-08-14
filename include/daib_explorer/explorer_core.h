@@ -63,6 +63,18 @@ struct ExplorerConfig
 
   double coverage_voxel_size_m = 2.0;
 
+  // Mission-lifetime observation memory is independent from the rolling
+  // collision map and PVBSM structural memory. It records only whether a
+  // coarse cell has been observed consistently across different cloud frames.
+  bool exploration_memory_enabled = true;
+  bool exploration_memory_filter_enabled = false;
+  double exploration_memory_voxel_size_m = 1.0;
+  int exploration_memory_min_observations = 3;
+  double exploration_memory_max_range_m = 20.0;
+  double frontier_history_probe_distance_m = 4.0;
+  double frontier_history_probe_step_m = 1.0;
+  double frontier_history_observed_ratio = 0.7;
+
   double replan_interval_s = 1.0;
   double goal_min_hold_time_s = 5.0;
   int goal_blocked_confirm_updates = 10;
@@ -81,18 +93,26 @@ struct ExplorerConfig
   double min_known_free_path_ratio = 0.5;
   double goal_switch_margin = 0.15;
 
-  // DAIB-MCSVF: cluster raw frontier voxels, then place one safe viewpoint
-  // in known free space for each cluster before doing the original scoring.
+  // DAIB-MCSVF: cluster edge-connected frontier voxels with 18-neighbor
+  // connectivity, then place multiple safe viewpoints in known free space for
+  // each cluster before scoring. Frontier validity itself remains 6-neighbor.
+  // frontier_cluster_size_m is retained for configuration compatibility; the
+  // current cluster definition is based on planning-voxel connectivity.
   double frontier_cluster_size_m = 2.0;
-  int min_frontier_cluster_cells = 1;
+  int min_frontier_cluster_cells = 10;
   double viewpoint_standoff_m = 1.0;
   double viewpoint_search_radius_m = 2.0;
+  double viewpoint_same_height_tolerance_m = 0.5;
   double min_wall_clearance_m = 0.5;
+  int max_viewpoints_per_cluster = 8;
   int max_safe_viewpoint_candidates = 64;
   double preferred_heading_change_deg = 60.0;
+  // Retained for launch/configuration compatibility. Heading is now a soft
+  // rotation cost rather than a hard candidate rejection.
   double max_heading_change_deg = 120.0;
   double distance_cost_weight = 0.5;
   double heading_cost_weight = 3.0;
+  double arrival_yaw_cost_weight = 0.5;
 
   // Bounded reachability prevents straight-line visibility from rejecting a
   // valid goal around a corner. Direct free lines do not invoke A*.
@@ -142,6 +162,12 @@ struct ExplorerStats
   std::size_t occupied_cells = 0;
   std::size_t frontier_cells = 0;
   std::size_t visited_cells = 0;
+  std::size_t exploration_memory_cells = 0;
+  std::size_t stable_exploration_memory_cells = 0;
+  std::size_t historical_clusters_checked = 0;
+  std::size_t historical_clusters_observed = 0;
+  std::size_t rejected_historical_clusters = 0;
+  std::size_t historical_probe_cells = 0;
   // Deprecated compatibility slots. ExplorerNode exposes the corresponding
   // observed/submaps log values from PvbsmMemory instead of this core.
   std::size_t observed_cells = 0;
@@ -161,7 +187,12 @@ struct ExplorerStats
   std::size_t pvbsm_scored_candidates = 0;
   std::size_t pvbsm_unseen_candidates = 0;
   double pvbsm_best_adjustment = 0.0;
+  std::size_t valid_frontier_cells = 0;
+  std::size_t rejected_stale_frontiers = 0;
+  std::size_t frontier_components = 0;
+  std::size_t rejected_small_clusters = 0;
   std::size_t frontier_clusters = 0;
+  double last_cluster_ms = 0.0;
   std::size_t safe_viewpoint_candidates = 0;
   std::size_t rejected_no_viewpoint = 0;
   std::size_t rejected_distance = 0;
@@ -190,15 +221,30 @@ public:
               const std::vector<Vec3> &points, double timestamp);
   bool consumeDecision(GoalDecision &decision);
   std::vector<Vec3> frontierPoints(std::size_t limit) const;
+  std::vector<Vec3> validClusterFrontierPoints() const;
+  std::vector<Vec3> selectedFrontierPoints() const;
+  uint64_t selectedClusterGeneration() const
+  {
+    return selected_cluster_generation_;
+  }
   std::vector<Vec3> occupiedPoints(const Vec3 &position, double radius,
                                    std::size_t limit) const;
 
   const ExplorerStats &stats() const { return stats_; }
 private:
+  friend class ExplorerCoreTestPeer;
+
   struct Cell
   {
     int16_t log_odds = 0;
     uint64_t last_update = 0;
+  };
+
+  struct ExplorationMemoryCell
+  {
+    uint16_t observations = 0;
+    // Bit 0: traversed free-space evidence; bit 1: ray endpoint evidence.
+    uint8_t evidence = 0;
   };
 
   ExplorerConfig config_;
@@ -208,6 +254,11 @@ private:
   std::unordered_set<VoxelKey, VoxelKeyHash> dirty_frontiers_;
   std::unordered_set<VoxelKey, VoxelKeyHash> frontiers_;
   std::unordered_map<VoxelKey, uint32_t, VoxelKeyHash> visits_;
+  std::unordered_map<VoxelKey, ExplorationMemoryCell, VoxelKeyHash>
+      exploration_memory_;
+  std::vector<VoxelKey> valid_cluster_frontiers_;
+  std::vector<VoxelKey> selected_frontier_cluster_;
+  uint64_t selected_cluster_generation_ = 0;
 
   GoalDecision decision_;
   uint64_t update_id_ = 0;
@@ -242,9 +293,17 @@ private:
   VoxelKey key(const Vec3 &point, double voxel_size) const;
   Vec3 center(const VoxelKey &key, double voxel_size) const;
   int cellState(const VoxelKey &key) const;
+  bool isFrontierVoxel(const VoxelKey &key) const;
   void markFrontierDirty(const VoxelKey &key);
   void updateCell(const VoxelKey &key, int delta);
   void integrateCloud(const Vec3 &origin, const std::vector<Vec3> &points);
+  void updateExplorationMemory(
+      const std::unordered_map<VoxelKey, uint8_t, VoxelKeyHash>
+          &frame_evidence);
+  bool explorationMemoryObserved(const VoxelKey &key) const;
+  double clusterHistoricalObservedRatio(
+      const std::vector<VoxelKey> &cluster,
+      std::size_t *probe_cells = nullptr) const;
   void prune(const Vec3 &position);
   void updateFrontiers();
   bool segmentBlocked(const Vec3 &start, const Vec3 &end,
@@ -252,9 +311,17 @@ private:
   bool pathReachable(const Vec3 &start, const Vec3 &end,
                      int max_expansions, bool *budget_exhausted = nullptr) const;
   bool hasWallClearance(const VoxelKey &voxel) const;
-  bool makeSafeViewpoint(const std::vector<VoxelKey> &cluster,
-                         Vec3 &viewpoint, VoxelKey &representative) const;
-  std::vector<std::vector<VoxelKey>> frontierClusters() const;
+  struct SafeViewpoint
+  {
+    Vec3 point;
+    Vec3 observation_target;
+    VoxelKey representative;
+  };
+  std::vector<SafeViewpoint> makeSafeViewpoints(
+      const std::vector<VoxelKey> &cluster,
+      const Vec3 &position,
+      int limit) const;
+  std::vector<std::vector<VoxelKey>> frontierClusters();
   double currentYaw() const;
   double headingChange(const Vec3 &position, const Vec3 &goal) const;
   bool nearFailedGoal(const Vec3 &point) const;

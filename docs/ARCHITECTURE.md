@@ -18,6 +18,7 @@ DAIB-Explorer (default 10 Hz, best effort)
   - rolling occupancy map
   - incremental frontier set
   - coarse trajectory-visit memory
+  - mission-lifetime stable-observation memory
   - bounded planar/residual-voxel long-term geometry cache
   - degeneracy-aware information-budgeted goal selection
         |
@@ -34,9 +35,10 @@ PX4
 
 Within DAIB-Explorer, only occupancy integration and current-goal blockage
 checks follow the 10 Hz input. Dirty-frontier processing runs at 2 Hz, goal
-candidate evaluation at 1 Hz, and trajectory-visit maintenance at 1 Hz. The
-remaining 1 Hz core task stores only visited trajectory cells;
-structural coverage and submap ownership come from PVBSM. These stages share
+candidate evaluation at 1 Hz, and trajectory-visit maintenance at 1 Hz.
+Mission-lifetime observation memory reuses the bounded ray samples from each
+accepted cloud, with per-frame deduplication and a multi-frame stability
+threshold. Structural coverage and submap ownership come from PVBSM. These stages share
 one serialized core rather than independent worker threads, so rate separation
 does not introduce map races.
 
@@ -55,20 +57,24 @@ Repeated selections of the same coarse frontier with little vehicle progress
 activate a temporary escape tier that blacklists recent clusters. These
 operations stay inside the 1 Hz goal stage and do not add work to FAST-LIVO2.
 
-## Three map layers
+## Four map layers
 
 1. **Rolling occupancy map**: bounded by `planning_map_radius_m`, updated at
    `map_update_rate_hz`, and used for collision/frontier queries.
 2. **Active frontier set**: updated only around cells whose occupancy state
    changed. Per-update work is capped by `frontier_update_budget`.
-3. **Long-term exploration memory**: coarse visited trajectory cells plus
+3. **Mission observation memory**: monotonic coarse cells that answer only
+   whether an area was stably observed during this Explorer process. It is not
+   a collision map and is cleared on restart. Historical cluster filtering is
+   available but disabled by default for a statistics-only validation phase.
+4. **Structural exploration memory**: coarse visited trajectory cells plus
    DAIB-PVBSM. Its detailed plane/residual cache is bounded, while a compact
    per-submap observed-root bitmap survives detailed-record demotion. With the
    default 8x8x8 block, the coverage bitmap is 512 bits (64 bytes) per
-   represented submap. PVBSM is the only structural submap representation;
-   Explorer no longer builds a second point-cloud-derived submap summary.
-   This prevents repeated coverage without copying FAST-LIVO2's estimator
-   octree or visual feature map.
+   represented submap. PVBSM remains the only structural submap
+   representation. The mission observation memory stores only coarse counters
+   and evidence flags, without copying FAST-LIVO2's estimator octree or visual
+   feature map.
 
 FAST-LIVO2 local-map retirement and PVBSM forgetting are deliberately
 separate. A root leaving the estimator window arrives as one archived
@@ -77,9 +83,9 @@ is reached, Explorer removes only detailed geometry and retains the observed
 bit and submap coverage count. Only a hard-deletion record, source-session
 reset, or mission reset clears long-term coverage.
 
-The first two layers can be discarded/rebuilt if the explorer restarts; SLAM
-localization is unaffected. Persisting and exchanging the third layer is the
-future dual-UAV extension.
+The first three layers can be discarded/rebuilt if the explorer restarts;
+SLAM localization is unaffected. Persisting and exchanging the fourth layer is
+the future dual-UAV extension.
 
 ## Compute isolation
 
