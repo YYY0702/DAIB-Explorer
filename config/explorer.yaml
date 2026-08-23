@@ -9,6 +9,8 @@ topics:
   pvbsm_delta: /daib_slam/pvbsm_delta
   goal: /daib_explorer/goal
   frontiers: /daib_explorer/frontiers
+  valid_cluster_frontiers: /daib_explorer/valid_cluster_frontiers
+  selected_cluster_frontiers: /daib_explorer/selected_cluster_frontiers
   planning_cloud: /daib_explorer/planning_cloud
   ready: /daib_explorer/ready
   state: /daib_explorer/state
@@ -71,6 +73,21 @@ long_term_update_rate_hz: 1.0
 # second point-cloud-derived long-term map inside Explorer.
 coverage_voxel_size_m: 2.0
 
+# Mission-lifetime observation memory. It reuses the already budgeted LiDAR
+# rays, deduplicates every cell within a cloud frame, and requires evidence
+# from three distinct frames before a 1 m cell becomes stable observed.
+# The capability is disabled by default. First validate bounded growth,
+# coordinate consistency and overlap with PVBSM in record-only mode; only then
+# consider allowing it to suppress goals.
+exploration_memory_enabled: false
+exploration_memory_filter_enabled: false
+exploration_memory_voxel_size_m: 1.0
+exploration_memory_min_observations: 3
+exploration_memory_max_range_m: 20.0
+frontier_history_probe_distance_m: 4.0
+frontier_history_probe_step_m: 1.0
+frontier_history_observed_ratio: 0.7
+
 replan_interval_s: 1.0
 goal_min_hold_time_s: 5.0
 # Hold an accepted goal until reached, persistently blocked or stalled.
@@ -95,19 +112,25 @@ max_goal_vertical_distance_m: 3.0
 min_known_free_path_ratio: 0.5
 goal_switch_margin: 0.15
 
-# DAIB-MCSVF: first reduce raw frontier voxels into local clusters, then place
-# one goal in known free space behind each boundary. Candidate production is
-# deliberately permissive; only flight safety envelopes remain hard filters.
+# DAIB-MCSVF: form 18-neighbor connected frontier components, reject components
+# with fewer than ten planning voxels, then place multiple known-free
+# viewpoints for each retained boundary. Frontier validity remains 6-neighbor.
+# Prefer viewpoints close to current odom.z and use height changes only when
+# no same-height safe candidate exists. Kept for
+# compatibility; cluster size is not used by the connected-component logic.
 frontier_cluster_size_m: 2.0
-min_frontier_cluster_cells: 1
+min_frontier_cluster_cells: 10
 viewpoint_standoff_m: 1.0
 viewpoint_search_radius_m: 2.0
+viewpoint_same_height_tolerance_m: 0.5
 min_wall_clearance_m: 0.5
+max_viewpoints_per_cluster: 8
 max_safe_viewpoint_candidates: 64
 preferred_heading_change_deg: 60.0
 max_heading_change_deg: 120.0
 distance_cost_weight: 0.5
 heading_cost_weight: 3.0
+arrival_yaw_cost_weight: 0.5
 
 # Bounded A* is used only to confirm whether the active goal is persistently
 # blocked. It is not run for every frontier candidate.

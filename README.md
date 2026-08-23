@@ -6,6 +6,13 @@ coarse trajectory-visit memory, PVBSM structural memory and single-UAV goal
 selection. FAST-LIVO2 remains responsible only for localization/mapping and
 publishes observations through standard ROS messages.
 
+Explorer contains an optional mission-lifetime coarse observation-memory
+implementation. It is disabled in the default flight profile and does not
+participate in goal selection. When enabled for validation, it records cells
+traversed by the already budgeted LiDAR rays and requires observations from
+multiple distinct cloud frames before a cell becomes stable; it is never used
+as current free-space or collision evidence.
+
 ## Why it is a separate process
 
 - FAST-LIVO2 stays on its real-time LIO/VIO path even if frontier extraction is
@@ -26,17 +33,32 @@ The internal schedule is deliberately multi-rate:
 | Goal candidate evaluation/replanning | 1 Hz |
 | Coarse trajectory-visit memory | 1 Hz |
 
+When explicitly enabled, mission-lifetime observation memory updates with every
+accepted cloud because it reuses the same bounded ray set as occupancy
+integration. Per-frame deduplication prevents repeated points in one cloud from
+satisfying the stable observation threshold.
+
 Dirty cells accumulate in a deduplicated set between frontier cycles, so the
 lower frontier rate does not discard occupancy changes.
 
 Goal selection uses DAIB-MCSVF (Motion-Constrained Safe-Viewpoint Frontier):
-raw frontier voxels are grouped into 2 m local clusters, one observation pose
-is searched in known free space for each cluster, and a free frontier voxel is
-used as a conservative fallback when sparse rays cannot support the ideal
-standoff pose. The candidate layer retains only the required clearance,
-distance, relative-height, known-free-ratio and 120-degree safety bounds.
-Inside those bounds, information and PVBSM novelty are balanced against
-continuous distance and heading costs instead of hard preference tiers.
+raw frontier voxels are grouped into 18-neighbor connected components with at
+least ten planning voxels. Frontier validity itself remains based on face-only
+6-neighbor occupancy. Up to eight observation poses are searched in known free
+space for each cluster, prioritising poses within 0.5 m of the current flight
+height. A free frontier voxel is used as a conservative fallback when sparse
+rays cannot support the ideal standoff pose. The candidate layer retains the
+required clearance, distance, relative-height, known-free-ratio and 120-degree
+heading constraints. Inside those bounds, information and PVBSM novelty are
+balanced against continuous distance, travel-heading and arrival-yaw costs.
+
+Mission-lifetime observation memory is an optional staged capability and is
+disabled by default. After its growth, coordinate consistency and overlap with
+PVBSM coverage have been validated, `exploration_memory_enabled` may be enabled
+in record-only mode while `exploration_memory_filter_enabled` remains false.
+Only a later validated configuration may allow the filter to suppress clusters
+whose unknown-side probes are at least 70 percent stably observed. The raw
+valid cluster topic remains unchanged for before/after diagnosis.
 
 Vertical motion is limited relative to the current UAV pose rather than a
 fixed map altitude: with the default `max_goal_vertical_distance_m: 3.0`, a
@@ -70,6 +92,8 @@ Outputs:
 |---|---|---|
 | `/daib_explorer/goal` | `geometry_msgs/PoseStamped` | EGO-Swarm bridge; timestamp and pose identify the goal |
 | `/daib_explorer/frontiers` | `sensor_msgs/PointCloud2` | RViz / validation |
+| `/daib_explorer/valid_cluster_frontiers` | `sensor_msgs/PointCloud2` | All frontier voxels in connected components with at least `min_frontier_cluster_cells`; independent of viewpoint and goal selection |
+| `/daib_explorer/selected_cluster_frontiers` | `sensor_msgs/PointCloud2` | Complete frontier cluster that produced the current goal; empty when no goal is valid |
 | `/daib_explorer/planning_cloud` | `sensor_msgs/PointCloud2` | Rolling occupied-voxel centers for local planning |
 | `/daib_explorer/ready` | `std_msgs/Bool` | Planner watchdog; latched state plus 1 Hz heartbeat |
 | `/daib_explorer/state` | `std_msgs/String` | Validation/debug |
@@ -80,6 +104,20 @@ The EGO planning cloud is a view of occupied cells within 12 m of the current
 vehicle position, capped at 6000 points by default. This limits ROS
 serialization and local-planner work without pruning the Explorer's rolling
 occupancy map or frontier set.
+
+Each retained frontier cluster can contribute up to
+`max_viewpoints_per_cluster` known-free viewpoints. Candidates within
+`viewpoint_same_height_tolerance_m` of the current odometry height are used
+whenever any are available; bounded vertical candidates are considered only
+when no same-height candidate survives. Distance, wall clearance, line of
+sight, known-free path ratio and failed-goal cooldown remain hard constraints.
+Heading is a score cost instead of a hard rejection.
+
+The goal quaternion contains zero roll and pitch. Its yaw points from the
+selected viewpoint toward that viewpoint's frontier/unknown observation
+target, rather than along the path from the current vehicle position to the
+viewpoint. Downstream bridge, planner and controller support for this arrival
+yaw must be validated separately.
 
 DAIB-PVBSM runs on a separate low-rate subscriber callback. It stores
 versioned plane primitives and residual voxels by source/root identity, rejects

@@ -81,6 +81,12 @@ public:
         nh_.advertise<geometry_msgs::PoseStamped>(goal_topic_, 1, true);
     frontiers_pub_ =
         nh_.advertise<sensor_msgs::PointCloud2>(frontiers_topic_, 1, true);
+    valid_cluster_frontiers_pub_ =
+        nh_.advertise<sensor_msgs::PointCloud2>(
+            valid_cluster_frontiers_topic_, 1, true);
+    selected_cluster_frontiers_pub_ =
+        nh_.advertise<sensor_msgs::PointCloud2>(
+            selected_cluster_frontiers_topic_, 1, true);
     planning_cloud_pub_ =
         nh_.advertise<sensor_msgs::PointCloud2>(planning_cloud_topic_, 1);
     ready_pub_ = nh_.advertise<std_msgs::Bool>(ready_topic_, 1, true);
@@ -114,6 +120,8 @@ private:
   ros::Subscriber pvbsm_sub_;
   ros::Publisher goal_pub_;
   ros::Publisher frontiers_pub_;
+  ros::Publisher valid_cluster_frontiers_pub_;
+  ros::Publisher selected_cluster_frontiers_pub_;
   ros::Publisher planning_cloud_pub_;
   ros::Publisher ready_pub_;
   ros::Publisher state_pub_;
@@ -145,6 +153,10 @@ private:
   std::string pvbsm_topic_ = "/daib_slam/pvbsm_delta";
   std::string goal_topic_ = "/daib_explorer/goal";
   std::string frontiers_topic_ = "/daib_explorer/frontiers";
+  std::string valid_cluster_frontiers_topic_ =
+      "/daib_explorer/valid_cluster_frontiers";
+  std::string selected_cluster_frontiers_topic_ =
+      "/daib_explorer/selected_cluster_frontiers";
   std::string planning_cloud_topic_ = "/daib_explorer/planning_cloud";
   std::string ready_topic_ = "/daib_explorer/ready";
   std::string state_topic_ = "/daib_explorer/state";
@@ -177,6 +189,12 @@ private:
     private_nh_.param("topics/pvbsm_delta", pvbsm_topic_, pvbsm_topic_);
     private_nh_.param("topics/goal", goal_topic_, goal_topic_);
     private_nh_.param("topics/frontiers", frontiers_topic_, frontiers_topic_);
+    private_nh_.param("topics/valid_cluster_frontiers",
+                      valid_cluster_frontiers_topic_,
+                      valid_cluster_frontiers_topic_);
+    private_nh_.param("topics/selected_cluster_frontiers",
+                      selected_cluster_frontiers_topic_,
+                      selected_cluster_frontiers_topic_);
     private_nh_.param(
         "topics/planning_cloud", planning_cloud_topic_, planning_cloud_topic_);
     private_nh_.param("topics/ready", ready_topic_, ready_topic_);
@@ -265,6 +283,30 @@ private:
     private_nh_.param("coverage_voxel_size_m",
                       config.coverage_voxel_size_m,
                       config.coverage_voxel_size_m);
+    private_nh_.param("exploration_memory_enabled",
+                      config.exploration_memory_enabled,
+                      config.exploration_memory_enabled);
+    private_nh_.param("exploration_memory_filter_enabled",
+                      config.exploration_memory_filter_enabled,
+                      config.exploration_memory_filter_enabled);
+    private_nh_.param("exploration_memory_voxel_size_m",
+                      config.exploration_memory_voxel_size_m,
+                      config.exploration_memory_voxel_size_m);
+    private_nh_.param("exploration_memory_min_observations",
+                      config.exploration_memory_min_observations,
+                      config.exploration_memory_min_observations);
+    private_nh_.param("exploration_memory_max_range_m",
+                      config.exploration_memory_max_range_m,
+                      config.exploration_memory_max_range_m);
+    private_nh_.param("frontier_history_probe_distance_m",
+                      config.frontier_history_probe_distance_m,
+                      config.frontier_history_probe_distance_m);
+    private_nh_.param("frontier_history_probe_step_m",
+                      config.frontier_history_probe_step_m,
+                      config.frontier_history_probe_step_m);
+    private_nh_.param("frontier_history_observed_ratio",
+                      config.frontier_history_observed_ratio,
+                      config.frontier_history_observed_ratio);
     private_nh_.param("replan_interval_s",
                       config.replan_interval_s,
                       config.replan_interval_s);
@@ -321,9 +363,15 @@ private:
     private_nh_.param("viewpoint_search_radius_m",
                       config.viewpoint_search_radius_m,
                       config.viewpoint_search_radius_m);
+    private_nh_.param("viewpoint_same_height_tolerance_m",
+                      config.viewpoint_same_height_tolerance_m,
+                      config.viewpoint_same_height_tolerance_m);
     private_nh_.param("min_wall_clearance_m",
                       config.min_wall_clearance_m,
                       config.min_wall_clearance_m);
+    private_nh_.param("max_viewpoints_per_cluster",
+                      config.max_viewpoints_per_cluster,
+                      config.max_viewpoints_per_cluster);
     private_nh_.param("max_safe_viewpoint_candidates",
                       config.max_safe_viewpoint_candidates,
                       config.max_safe_viewpoint_candidates);
@@ -339,6 +387,9 @@ private:
     private_nh_.param("heading_cost_weight",
                       config.heading_cost_weight,
                       config.heading_cost_weight);
+    private_nh_.param("arrival_yaw_cost_weight",
+                      config.arrival_yaw_cost_weight,
+                      config.arrival_yaw_cost_weight);
     private_nh_.param("reachability_enabled",
                       config.reachability_enabled,
                       config.reachability_enabled);
@@ -729,6 +780,8 @@ private:
                                     : cloud->header.stamp.toSec();
     const uint64_t previous_frontier_cycle =
         core_->stats().frontier_update_cycles;
+    const uint64_t previous_goal_cycle =
+        core_->stats().goal_evaluation_cycles;
     core_->setHealth(degenerate, score, runtime);
     core_->update(position, orientation, points, timestamp);
     processed_cloud_sequence_ = cloud_sequence;
@@ -741,6 +794,10 @@ private:
               static_cast<std::size_t>(max_published_frontiers_)),
           cloud->header, frontiers_pub_);
     }
+    if (core_->stats().goal_evaluation_cycles != previous_goal_cycle)
+      publishPointCloud(
+          core_->validClusterFrontierPoints(),
+          cloud->header, valid_cluster_frontiers_pub_);
     if (planning_cloud_pub_.getNumSubscribers() > 0)
       publishPointCloud(
           core_->occupiedPoints(
@@ -755,6 +812,22 @@ private:
       std_msgs::String state_message;
       state_message.data = decision.state + ":" + decision.reason;
       state_pub_.publish(state_message);
+      const bool selected_cluster_matches_goal =
+          decision.valid &&
+          core_->selectedClusterGeneration() == decision.generation;
+      if (decision.valid && !selected_cluster_matches_goal)
+      {
+        ROS_ERROR_STREAM(
+            "[ DAIB Explorer ] selected cluster generation mismatch: goal="
+            << decision.generation << ", cluster="
+            << core_->selectedClusterGeneration());
+      }
+      const std::vector<Vec3> selected_cluster_points =
+          selected_cluster_matches_goal ? core_->selectedFrontierPoints()
+                                        : std::vector<Vec3>{};
+      publishPointCloud(
+          selected_cluster_points,
+          cloud->header, selected_cluster_frontiers_pub_);
       if (decision.valid)
       {
         geometry_msgs::PoseStamped goal;
@@ -775,6 +848,8 @@ private:
                         << ", goal=(" << decision.position.x << ", "
                         << decision.position.y << ", " << decision.position.z
                         << "), tier=" << decision.constraint_tier
+                        << ", cluster_cells="
+                        << selected_cluster_points.size()
                         << ", heading_change="
                         << decision.heading_change_deg << " deg"
                         << ", plan=" << decision.planning_time_ms << " ms");
@@ -793,7 +868,12 @@ private:
     ROS_INFO_STREAM_THROTTLE(
         1.0, "[ DAIB Explorer ] map=" << stats.free_cells << " free/"
         << stats.occupied_cells << " occupied/" << stats.frontier_cells
-        << " frontier/" << stats.frontier_clusters << " clusters/"
+        << " frontier(raw)/" << stats.valid_frontier_cells << " valid/"
+        << stats.rejected_stale_frontiers << " stale, cluster="
+        << stats.frontier_components << " components/"
+        << stats.rejected_small_clusters << " small_rejected/"
+        << stats.frontier_clusters << " valid, cluster_ms="
+        << stats.last_cluster_ms << ", "
         << stats.candidates_scored << " candidates, reject="
         << stats.rejected_no_viewpoint << " no_viewpoint/"
         << stats.rejected_distance << " distance/"
@@ -802,6 +882,12 @@ private:
         << stats.rejected_known_free_path << " known_path/"
         << stats.rejected_failed_goal << " failed_goal"
         << ", visited=" << stats.visited_cells
+        << ", exploration_memory=" << stats.exploration_memory_cells
+        << " cells/" << stats.stable_exploration_memory_cells
+        << " stable, history=" << stats.historical_clusters_checked
+        << " checked/" << stats.historical_clusters_observed
+        << " observed/" << stats.rejected_historical_clusters
+        << " rejected/" << stats.historical_probe_cells << " probes"
         // Compatibility aliases: existing log parsers can keep consuming
         // observed/submaps, but both now come from the single PVBSM memory.
         << ", observed=" << pvbsm_root_count

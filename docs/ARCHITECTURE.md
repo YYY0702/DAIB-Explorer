@@ -18,6 +18,7 @@ DAIB-Explorer (default 10 Hz, best effort)
   - rolling occupancy map
   - incremental frontier set
   - coarse trajectory-visit memory
+  - optional mission-lifetime stable-observation statistics (default off)
   - bounded planar/residual-voxel long-term geometry cache
   - degeneracy-aware information-budgeted goal selection
         |
@@ -34,11 +35,14 @@ PX4
 
 Within DAIB-Explorer, only occupancy integration and current-goal blockage
 checks follow the 10 Hz input. Dirty-frontier processing runs at 2 Hz, goal
-candidate evaluation at 1 Hz, and trajectory-visit maintenance at 1 Hz. The
-remaining 1 Hz core task stores only visited trajectory cells;
-structural coverage and submap ownership come from PVBSM. These stages share
-one serialized core rather than independent worker threads, so rate separation
-does not introduce map races.
+candidate evaluation at 1 Hz, and trajectory-visit maintenance at 1 Hz.
+When explicitly enabled for validation, mission-lifetime observation memory
+reuses the bounded ray samples from each accepted cloud, with per-frame
+deduplication and a multi-frame stability threshold. It is disabled by default
+and does not define the authoritative long-term map. Structural coverage and
+submap ownership come from PVBSM. These stages share one serialized core rather
+than independent worker threads, so rate separation does not introduce map
+races.
 
 PVBSM affects only the 1 Hz candidate score. Candidate positions are queried
 as one batch under one short memory lock. The score continuously penalizes
@@ -46,29 +50,33 @@ well-covered submaps and exact represented roots, rewards unseen submaps, and
 adds a bounded structural-support term during degeneracy. The rolling
 occupancy map remains the sole collision authority.
 
-Before scoring, DAIB-MCSVF spatially clusters the active frontier set and
-converts each boundary cluster into one wall-clear known-free viewpoint.
-Candidates then pass scene-specific vertical/climb limits and a three-tier
-heading/distance filter. Straight free segments require no graph search; only
-wall-occluded candidates invoke bounded A* over known-free planning voxels.
-Repeated selections of the same coarse frontier with little vehicle progress
-activate a temporary escape tier that blacklists recent clusters. These
-operations stay inside the 1 Hz goal stage and do not add work to FAST-LIVO2.
+Before scoring, DAIB-MCSVF groups the active frontier set into 18-neighbor
+connected components and searches up to eight wall-clear known-free viewpoints
+for each retained component. It prioritises viewpoints close to the current
+flight height, rejects candidates beyond the 120-degree heading bound, and
+uses continuous travel-heading and arrival-yaw costs within the feasible set.
+Bounded A* is reserved for the 2 Hz active-goal blockage check rather than run
+for every candidate. Goal stagnation and failed-point cooldown suppress simple
+local repetition; an explicit global maze-escape tier is not yet implemented.
+These operations stay outside FAST-LIVO2.
 
-## Three map layers
+## Authoritative map layers and optional statistics
 
 1. **Rolling occupancy map**: bounded by `planning_map_radius_m`, updated at
    `map_update_rate_hz`, and used for collision/frontier queries.
 2. **Active frontier set**: updated only around cells whose occupancy state
    changed. Per-update work is capped by `frontier_update_budget`.
-3. **Long-term exploration memory**: coarse visited trajectory cells plus
+3. **Structural exploration memory**: coarse visited trajectory cells plus
    DAIB-PVBSM. Its detailed plane/residual cache is bounded, while a compact
    per-submap observed-root bitmap survives detailed-record demotion. With the
    default 8x8x8 block, the coverage bitmap is 512 bits (64 bytes) per
-   represented submap. PVBSM is the only structural submap representation;
-   Explorer no longer builds a second point-cloud-derived submap summary.
-   This prevents repeated coverage without copying FAST-LIVO2's estimator
-   octree or visual feature map.
+   represented submap. PVBSM remains the only structural submap
+   representation.
+
+The optional mission observation statistics store only coarse counters and
+evidence flags. They are disabled by default, cleared on restart, and do not
+copy FAST-LIVO2's estimator octree or visual feature map. They therefore do not
+constitute a fourth authoritative map layer.
 
 FAST-LIVO2 local-map retirement and PVBSM forgetting are deliberately
 separate. A root leaving the estimator window arrives as one archived
@@ -77,9 +85,9 @@ is reached, Explorer removes only detailed geometry and retains the observed
 bit and submap coverage count. Only a hard-deletion record, source-session
 reset, or mission reset clears long-term coverage.
 
-The first two layers can be discarded/rebuilt if the explorer restarts; SLAM
-localization is unaffected. Persisting and exchanging the third layer is the
-future dual-UAV extension.
+The rolling occupancy and active frontier layers can be discarded and rebuilt
+if Explorer restarts; SLAM localization is unaffected. PVBSM is the structural
+layer intended for later persistence and dual-UAV exchange.
 
 ## Compute isolation
 
