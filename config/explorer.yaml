@@ -102,8 +102,8 @@ goal_progress_epsilon_m: 0.25
 goal_stall_timeout_s: 15.0
 failed_goal_exclusion_radius_m: 1.0
 failed_goal_cooldown_s: 30.0
-min_goal_distance_m: 1.5
-max_goal_distance_m: 8.0
+min_goal_distance_m: 2.0
+max_goal_distance_m: 15.0
 # Symmetric relative-height bound around the current UAV position:
 # current_z - 3 m <= goal_z <= current_z + 3 m.
 max_goal_vertical_distance_m: 3.0
@@ -149,8 +149,8 @@ lio_time_ema_alpha: 0.20
 busy_budget_scale: 0.50
 overload_budget_scale: 0.25
 
-# In geometric degeneracy, use shorter goals, stronger switching hysteresis,
-# and prefer rays already known to be free.
-degenerate_max_goal_distance_m: 8.0
+# In geometric degeneracy, keep the configured distance envelope by default,
+# use stronger switching hysteresis, and prefer rays already known to be free.
+degenerate_max_goal_distance_m: 15.0
 degenerate_goal_switch_margin: 0.30
 degenerate_safe_path_weight: 4.0

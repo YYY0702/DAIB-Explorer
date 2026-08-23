@@ -91,7 +91,8 @@ Acceptance criteria:
 - every valid goal is in a known-free voxel and has at least
   `min_wall_clearance_m` from occupied voxel centers;
 - normal logs report non-zero `frontier/... clusters/... candidates`; every
-  published goal is within 8 m and no more than 120 degrees from current yaw;
+  published goal is between 2 m and 15 m from the current position and no more
+  than 120 degrees from current yaw;
 - a maze replay may increase active-goal A* checks, but candidate evaluation
   itself must not increase that counter. `reachability_budget_exhaustions`
   should stay rare and the 1 Hz plan time must remain within the board budget.

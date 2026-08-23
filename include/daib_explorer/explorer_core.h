@@ -87,8 +87,8 @@ struct ExplorerConfig
   double failed_goal_exclusion_radius_m = 1.0;
   double failed_goal_cooldown_s = 30.0;
   bool allow_periodic_goal_switch = false;
-  double min_goal_distance_m = 1.5;
-  double max_goal_distance_m = 8.0;
+  double min_goal_distance_m = 2.0;
+  double max_goal_distance_m = 15.0;
   double max_goal_vertical_distance_m = 3.0;
   double min_known_free_path_ratio = 0.5;
   double goal_switch_margin = 0.15;
@@ -127,7 +127,7 @@ struct ExplorerConfig
   double busy_budget_scale = 0.50;
   double overload_budget_scale = 0.25;
 
-  double degenerate_max_goal_distance_m = 8.0;
+  double degenerate_max_goal_distance_m = 15.0;
   double degenerate_goal_switch_margin = 0.30;
   double degenerate_safe_path_weight = 4.0;
 

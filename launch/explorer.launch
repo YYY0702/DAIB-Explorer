@@ -5,8 +5,8 @@
   <arg name="cloud_topic" default="/daib_slam/planning_cloud"/>
   <arg name="pvbsm_memory_enabled" default="true"/>
   <arg name="pvbsm_scoring_enabled" default="true"/>
-  <arg name="min_goal_distance_m" default="1.5"/>
-  <arg name="max_goal_distance_m" default="8.0"/>
+  <arg name="min_goal_distance_m" default="2.0"/>
+  <arg name="max_goal_distance_m" default="15.0"/>
   <arg name="max_goal_vertical_distance_m" default="3.0"/>
   <arg name="min_known_free_path_ratio" default="0.5"/>
   <arg name="viewpoint_standoff_m" default="1.0"/>
