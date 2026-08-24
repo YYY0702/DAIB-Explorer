@@ -16,6 +16,10 @@ topics:
   state: /daib_explorer/state
   generation: /daib_explorer/generation
   pvbsm_memory_stats: /daib_explorer/pvbsm_memory_stats
+  decision_status: /daib_decision/module_status
+  decision_event: /daib_decision/event
+  decision_command: /daib_decision/command
+  decision_ack: /daib_decision/action_ack
 
 robot_id: 0
 

@@ -7,6 +7,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 add_compile_options(-Wall -Wextra -Wpedantic)
 
 find_package(catkin REQUIRED COMPONENTS
+  daib_decision
   geometry_msgs
   nav_msgs
   pcl_conversions
@@ -21,7 +22,7 @@ find_package(PCL REQUIRED COMPONENTS common filters)
 catkin_package(
   INCLUDE_DIRS include
   LIBRARIES daib_explorer_core
-  CATKIN_DEPENDS geometry_msgs nav_msgs pcl_conversions pcl_ros roscpp sensor_msgs std_msgs tf
+  CATKIN_DEPENDS daib_decision geometry_msgs nav_msgs pcl_conversions pcl_ros roscpp sensor_msgs std_msgs tf
 )
 
 include_directories(include ${catkin_INCLUDE_DIRS} ${PCL_INCLUDE_DIRS})

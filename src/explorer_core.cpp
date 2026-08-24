@@ -316,6 +316,25 @@ void ExplorerCore::setHealth(bool degenerate, double degeneracy_score,
     else if (smoothed_lio_ms_ >= config_.lio_busy_threshold_ms)
       stats_.budget_scale = config_.busy_budget_scale;
   }
+  if (decision_profile_ == 1)
+    stats_.budget_scale =
+        std::min(stats_.budget_scale, config_.busy_budget_scale);
+  else if (decision_profile_ == 2)
+    stats_.budget_scale =
+        std::min(stats_.budget_scale, config_.overload_budget_scale);
+}
+
+void ExplorerCore::setDecisionProfile(int profile)
+{
+  decision_profile_ = std::max(0, std::min(2, profile));
+}
+
+bool ExplorerCore::requestGoalReselection(bool escape)
+{
+  if (!decision_.valid) return false;
+  forced_reselection_ = true;
+  forced_escape_ = escape;
+  return true;
 }
 
 void ExplorerCore::integrateCloud(const Vec3 &origin,
@@ -1462,6 +1481,13 @@ void ExplorerCore::updateGoalStatus(const Vec3 &position, double timestamp)
   goal_timeout_ =
       had_goal && config_.goal_timeout_s > 0.0 && goal_set_time_ >= 0.0 &&
       timestamp - goal_set_time_ >= config_.goal_timeout_s;
+  if (had_goal && forced_reselection_)
+  {
+    goal_blocked_ = true;
+    goal_stalled_ = forced_escape_;
+    forced_reselection_ = false;
+    forced_escape_ = false;
+  }
 }
 
 bool ExplorerCore::isDue(double timestamp, double rate_hz, double &last_time)

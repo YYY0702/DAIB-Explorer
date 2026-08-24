@@ -259,6 +259,22 @@ TEST(ExplorerCore, EntersBusyBudgetAtValidatedBoardRuntime)
                 config.busy_budget_scale)));
 }
 
+TEST(ExplorerCore, DecisionProfileCapsAutomaticBudget)
+{
+  ExplorerConfig config;
+  ExplorerCore explorer(config);
+
+  explorer.setDecisionProfile(2);
+  explorer.setHealth(false, 0.2, 10.0);
+
+  EXPECT_DOUBLE_EQ(explorer.stats().budget_scale,
+                   config.overload_budget_scale);
+
+  explorer.setDecisionProfile(0);
+  explorer.setHealth(false, 0.2, 10.0);
+  EXPECT_DOUBLE_EQ(explorer.stats().budget_scale, 1.0);
+}
+
 TEST(ExplorerCore, MaintainsOnlyLightweightVisitMemory)
 {
   ExplorerConfig config;

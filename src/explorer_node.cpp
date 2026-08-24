@@ -25,6 +25,11 @@
 #include <std_msgs/UInt64MultiArray.h>
 #include <tf/transform_datatypes.h>
 
+#include <daib_decision/DaibActionAck.h>
+#include <daib_decision/DaibDecisionCommand.h>
+#include <daib_decision/DaibEvent.h>
+#include <daib_decision/DaibModuleStatus.h>
+
 namespace daib_explorer
 {
 
@@ -76,6 +81,9 @@ public:
     if (pvbsm_memory_)
       pvbsm_sub_ = nh_.subscribe(
           pvbsm_topic_, 2, &ExplorerNode::pvbsmCallback, this);
+    decision_command_sub_ = nh_.subscribe(
+        decision_command_topic_, 10,
+        &ExplorerNode::decisionCommandCallback, this);
 
     goal_pub_ =
         nh_.advertise<geometry_msgs::PoseStamped>(goal_topic_, 1, true);
@@ -93,6 +101,13 @@ public:
     state_pub_ = nh_.advertise<std_msgs::String>(state_topic_, 1, true);
     generation_pub_ =
         nh_.advertise<std_msgs::UInt64>(generation_topic_, 1, true);
+    decision_status_pub_ =
+        nh_.advertise<daib_decision::DaibModuleStatus>(
+            decision_status_topic_, 10);
+    decision_event_pub_ = nh_.advertise<daib_decision::DaibEvent>(
+        decision_event_topic_, 10);
+    decision_ack_pub_ = nh_.advertise<daib_decision::DaibActionAck>(
+        decision_ack_topic_, 10);
     if (pvbsm_memory_)
       pvbsm_stats_pub_ = nh_.advertise<std_msgs::UInt64MultiArray>(
           pvbsm_stats_topic_, 1, true);
@@ -118,6 +133,7 @@ private:
   ros::Subscriber score_sub_;
   ros::Subscriber runtime_sub_;
   ros::Subscriber pvbsm_sub_;
+  ros::Subscriber decision_command_sub_;
   ros::Publisher goal_pub_;
   ros::Publisher frontiers_pub_;
   ros::Publisher valid_cluster_frontiers_pub_;
@@ -126,6 +142,9 @@ private:
   ros::Publisher ready_pub_;
   ros::Publisher state_pub_;
   ros::Publisher generation_pub_;
+  ros::Publisher decision_status_pub_;
+  ros::Publisher decision_event_pub_;
+  ros::Publisher decision_ack_pub_;
   ros::Publisher pvbsm_stats_pub_;
   ros::Timer map_timer_;
   std::unique_ptr<ExplorerCore> core_;
@@ -162,6 +181,10 @@ private:
   std::string state_topic_ = "/daib_explorer/state";
   std::string generation_topic_ = "/daib_explorer/generation";
   std::string pvbsm_stats_topic_ = "/daib_explorer/pvbsm_memory_stats";
+  std::string decision_status_topic_ = "/daib_decision/module_status";
+  std::string decision_event_topic_ = "/daib_decision/event";
+  std::string decision_command_topic_ = "/daib_decision/command";
+  std::string decision_ack_topic_ = "/daib_decision/action_ack";
   double map_update_rate_hz_ = 10.0;
   double input_timeout_s_ = 1.0;
   double ready_heartbeat_rate_hz_ = 1.0;
@@ -177,6 +200,12 @@ private:
   uint8_t pvbsm_expected_submap_edge_roots_ = 8;
   bool ready_ = false;
   bool ready_initialized_ = false;
+  uint64_t decision_source_session_ = ros::WallTime::now().toNSec();
+  uint64_t decision_status_sequence_ = 0;
+  uint64_t decision_event_sequence_ = 0;
+  uint64_t latest_decision_session_ = 0;
+  uint64_t latest_decision_command_id_ = 0;
+  uint64_t published_generation_ = 0;
 
   void readParameters(ExplorerConfig &config)
   {
@@ -205,6 +234,14 @@ private:
         "topics/pvbsm_memory_stats",
         pvbsm_stats_topic_,
         pvbsm_stats_topic_);
+    private_nh_.param("topics/decision_status",
+                      decision_status_topic_, decision_status_topic_);
+    private_nh_.param("topics/decision_event",
+                      decision_event_topic_, decision_event_topic_);
+    private_nh_.param("topics/decision_command",
+                      decision_command_topic_, decision_command_topic_);
+    private_nh_.param("topics/decision_ack",
+                      decision_ack_topic_, decision_ack_topic_);
 
     private_nh_.param("map_update_rate_hz", map_update_rate_hz_, 10.0);
     private_nh_.param("input_timeout_s", input_timeout_s_, 1.0);
@@ -644,6 +681,91 @@ private:
     std_msgs::Bool message;
     message.data = value;
     ready_pub_.publish(message);
+
+    daib_decision::DaibModuleStatus status;
+    status.header.stamp = ros::Time::now();
+    status.source = daib_decision::DaibModuleStatus::SOURCE_EXPLORER;
+    status.session = decision_source_session_;
+    status.sequence = ++decision_status_sequence_;
+    status.valid_for_s =
+        static_cast<float>(2.0 / ready_heartbeat_rate_hz_);
+    status.health = value
+                        ? daib_decision::DaibModuleStatus::HEALTH_NOMINAL
+                        : daib_decision::DaibModuleStatus::HEALTH_DEGRADED;
+    status.fault_mask = value
+                            ? daib_decision::DaibModuleStatus::FAULT_NONE
+                            : daib_decision::DaibModuleStatus::EXPLORER_STALE;
+    status.ready = value;
+    status.generation = published_generation_;
+    status.trajectory_valid = false;
+    status.consecutive_failures = 0;
+    status.metric_primary = core_ ? core_->stats().last_update_ms : 0.0;
+    status.metric_secondary = core_ ? core_->stats().last_plan_ms : 0.0;
+    decision_status_pub_.publish(status);
+  }
+
+  void publishDecisionEvent(uint16_t type, uint64_t generation,
+                            uint64_t reason_mask = 0)
+  {
+    daib_decision::DaibEvent event;
+    event.header.stamp = ros::Time::now();
+    event.source = daib_decision::DaibModuleStatus::SOURCE_EXPLORER;
+    event.event_type = type;
+    event.session = decision_source_session_;
+    event.sequence = ++decision_event_sequence_;
+    event.valid_for_s = 2.0;
+    event.generation = generation;
+    event.reason_mask = reason_mask;
+    decision_event_pub_.publish(event);
+  }
+
+  void publishDecisionAck(uint64_t command_id, uint8_t state,
+                          uint64_t reason_mask = 0)
+  {
+    daib_decision::DaibActionAck ack;
+    ack.header.stamp = ros::Time::now();
+    ack.decision_session = latest_decision_session_;
+    ack.command_id = command_id;
+    ack.source = daib_decision::DaibModuleStatus::SOURCE_EXPLORER;
+    ack.ack_state = state;
+    ack.reason_mask = reason_mask;
+    decision_ack_pub_.publish(ack);
+  }
+
+  void decisionCommandCallback(
+      const daib_decision::DaibDecisionCommandConstPtr &command)
+  {
+    if (command->target_source !=
+        daib_decision::DaibModuleStatus::SOURCE_EXPLORER)
+      return;
+    if (command->decision_session < latest_decision_session_ ||
+        (command->decision_session == latest_decision_session_ &&
+         command->command_id <= latest_decision_command_id_))
+      return;
+    if (command->decision_session > latest_decision_session_)
+      latest_decision_command_id_ = 0;
+    latest_decision_session_ = command->decision_session;
+    latest_decision_command_id_ = command->command_id;
+
+    if (command->action ==
+        daib_decision::DaibDecisionCommand::ACTION_REDUCE_BUDGET)
+    {
+      core_->setDecisionProfile(command->profile);
+      return;
+    }
+    if (command->action ==
+            daib_decision::DaibDecisionCommand::ACTION_RESELECT_GOAL ||
+        command->action ==
+            daib_decision::DaibDecisionCommand::ACTION_ENTER_ESCAPE)
+    {
+      const bool accepted = core_->requestGoalReselection(
+          command->action ==
+          daib_decision::DaibDecisionCommand::ACTION_ENTER_ESCAPE);
+      publishDecisionAck(
+          command->command_id,
+          accepted ? daib_decision::DaibActionAck::ACK_SUCCEEDED
+                   : daib_decision::DaibActionAck::ACK_REJECTED);
+    }
   }
 
   std::vector<Vec3> convertCloud(const sensor_msgs::PointCloud2 &cloud) const
@@ -735,7 +857,11 @@ private:
       ROS_WARN_THROTTLE(2.0, "[ DAIB Explorer ] waiting for fresh odometry and cloud");
       return;
     }
-    if (cloud_sequence == processed_cloud_sequence_) return;
+    if (cloud_sequence == processed_cloud_sequence_)
+    {
+      publishReady(true);
+      return;
+    }
     if (!odom->header.frame_id.empty() && !cloud->header.frame_id.empty() &&
         odom->header.frame_id != cloud->header.frame_id)
     {
@@ -828,6 +954,24 @@ private:
       publishPointCloud(
           selected_cluster_points,
           cloud->header, selected_cluster_frontiers_pub_);
+      const uint64_t previous_generation = published_generation_;
+      if (decision.reason == "goal_reached" ||
+          decision.reason == "goal_reached_no_next_frontier")
+        publishDecisionEvent(
+            daib_decision::DaibEvent::GOAL_REACHED,
+            previous_generation);
+      else if (decision.reason == "new_obstacle" ||
+               decision.reason == "goal_blocked_no_safe_frontier")
+        publishDecisionEvent(
+            daib_decision::DaibEvent::GOAL_BLOCKED,
+            previous_generation);
+      else if (decision.reason == "goal_stalled" ||
+               decision.reason == "goal_stalled_no_safe_frontier" ||
+               decision.reason == "goal_timeout" ||
+               decision.reason == "goal_timeout_no_safe_frontier")
+        publishDecisionEvent(
+            daib_decision::DaibEvent::GOAL_STALLED,
+            previous_generation);
       if (decision.valid)
       {
         geometry_msgs::PoseStamped goal;
@@ -842,6 +986,10 @@ private:
         std_msgs::UInt64 generation;
         generation.data = decision.generation;
         generation_pub_.publish(generation);
+        published_generation_ = decision.generation;
+        publishDecisionEvent(
+            daib_decision::DaibEvent::GOAL_AVAILABLE,
+            decision.generation);
         ROS_INFO_STREAM("[ DAIB Explorer ] generation=" << decision.generation
                         << ", state=" << decision.state
                         << ", reason=" << decision.reason
@@ -853,6 +1001,13 @@ private:
                         << ", heading_change="
                         << decision.heading_change_deg << " deg"
                         << ", plan=" << decision.planning_time_ms << " ms");
+      }
+      else
+      {
+        publishDecisionEvent(
+            daib_decision::DaibEvent::NO_SAFE_FRONTIER,
+            previous_generation,
+            daib_decision::DaibModuleStatus::NO_SAFE_FRONTIER);
       }
     }
 

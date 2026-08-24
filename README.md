@@ -85,6 +85,7 @@ Inputs:
 | `/daib_slam/degeneracy_score` | `std_msgs/Float64` | Normalized minimum eigenvalue |
 | `/daib_slam/lio_runtime_ms` | `std_msgs/Float64` | Current LIO latency |
 | `/daib_slam/pvbsm_delta` | `sensor_msgs/PointCloud2` | 1 Hz planar/residual-voxel submap delta |
+| `/daib_decision/command` | `DaibDecisionCommand` | Budget profile and explicit reselect/escape command |
 
 Outputs:
 
@@ -99,6 +100,9 @@ Outputs:
 | `/daib_explorer/state` | `std_msgs/String` | Validation/debug |
 | `/daib_explorer/generation` | `std_msgs/UInt64` | Planner acknowledgement and monitoring |
 | `/daib_explorer/pvbsm_memory_stats` | `std_msgs/UInt64MultiArray` | Persistent coverage plus bounded detailed-geometry statistics |
+| `/daib_decision/module_status` | `DaibModuleStatus` | Native Explorer readiness/health heartbeat |
+| `/daib_decision/event` | `DaibEvent` | Goal available/reached/blocked/stalled/no-frontier lifecycle |
+| `/daib_decision/action_ack` | `DaibActionAck` | Completion of reselect/escape commands targeted at Explorer |
 
 The EGO planning cloud is a view of occupied cells within 12 m of the current
 vehicle position, capped at 6000 points by default. This limits ROS

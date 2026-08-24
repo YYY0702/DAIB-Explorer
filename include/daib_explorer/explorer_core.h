@@ -216,6 +216,8 @@ public:
       const std::vector<PvbsmQueryPoint> &)>;
 
   void setHealth(bool degenerate, double degeneracy_score, double lio_runtime_ms);
+  void setDecisionProfile(int profile);
+  bool requestGoalReselection(bool escape);
   void setPvbsmBatchQuery(PvbsmBatchQuery query);
   void update(const Vec3 &position, const Quaternion &orientation,
               const std::vector<Vec3> &points, double timestamp);
@@ -268,6 +270,9 @@ private:
   bool degenerate_ = true;
   double degeneracy_score_ = 0.0;
   double smoothed_lio_ms_ = -1.0;
+  int decision_profile_ = 0;
+  bool forced_reselection_ = false;
+  bool forced_escape_ = false;
   double last_frontier_update_time_ = -1.0;
   double last_goal_evaluation_time_ = -1.0;
   double last_long_term_update_time_ = -1.0;
