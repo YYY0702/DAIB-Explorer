@@ -7,6 +7,10 @@ topics:
   degeneracy_score: /daib_slam/degeneracy_score
   lio_runtime_ms: /daib_slam/lio_runtime_ms
   pvbsm_delta: /daib_slam/pvbsm_delta
+  # Optional remote PVBSM topic. Set per vehicle in the dual-UAV launch.
+  peer_pvbsm_delta: ""
+  # Shared task-lease bus; each record carries robot_id/session/sequence.
+  coexplore_task: /daib_coexplore/task
   goal: /daib_explorer/goal
   frontiers: /daib_explorer/frontiers
   valid_cluster_frontiers: /daib_explorer/valid_cluster_frontiers
@@ -22,6 +26,18 @@ topics:
   decision_ack: /daib_decision/action_ack
 
 robot_id: 0
+
+# Distributed dual-UAV task deconfliction. Each selected goal is refreshed as
+# a short lease. Higher score wins; equal scores use lower robot_id as the
+# deterministic tie-break. TF must provide peer planning frame -> local frame.
+cooperation:
+  enabled: false
+  expected_peer_count: 1
+  goal_ttl_s: 3.0
+  goal_exclusion_radius_m: 2.0
+  score_tie_epsilon: 0.001
+  transform_timeout_s: 0.05
+  max_future_skew_s: 0.5
 
 # The latest cloud replaces any pending cloud. Mapping runs at this independent
 # timer and the queue-of-one handoff never build a backlog inside FAST-LIVO2.

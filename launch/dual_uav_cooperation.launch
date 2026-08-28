@@ -1,0 +1,161 @@
+<launch>
+  <!-- Starts the cooperation/decision/planning layers for two UAVs.  Start
+       one FAST-LIVO2 instance per sensor stack separately and remap its DAIB
+       outputs to /uav0/daib_slam/* and /uav1/daib_slam/*. -->
+  <arg name="use_sim_time" default="false"/>
+  <arg name="explorer_config"
+       default="$(find daib_explorer)/config/explorer.yaml"/>
+  <arg name="decision_policy"
+       default="$(find daib_decision)/config/decision_policy.yaml"/>
+  <arg name="require_px4" default="false"/>
+
+  <!-- Pose of uav1/camera_init expressed in uav0/camera_init. -->
+  <arg name="uav1_in_uav0_x" default="0.0"/>
+  <arg name="uav1_in_uav0_y" default="0.0"/>
+  <arg name="uav1_in_uav0_z" default="0.0"/>
+  <arg name="uav1_in_uav0_yaw_rad" default="0.0"/>
+  <!-- Inverse anchor for EGO's peer-control-point transformation.  Keep these
+       consistent with the transform above; defaults cover a common origin. -->
+  <arg name="uav0_in_uav1_x" default="0.0"/>
+  <arg name="uav0_in_uav1_y" default="0.0"/>
+  <arg name="uav0_in_uav1_z" default="0.0"/>
+  <arg name="uav0_in_uav1_yaw_deg" default="0.0"/>
+  <arg name="uav1_in_uav0_yaw_deg" default="0.0"/>
+
+  <param name="/use_sim_time" value="$(arg use_sim_time)"/>
+  <node pkg="tf" type="static_transform_publisher"
+        name="daib_uav0_uav1_anchor"
+        args="$(arg uav1_in_uav0_x) $(arg uav1_in_uav0_y) $(arg uav1_in_uav0_z) $(arg uav1_in_uav0_yaw_rad) 0 0 uav0/camera_init uav1/camera_init 100"/>
+
+  <group ns="uav0">
+    <node pkg="daib_explorer" type="daib_explorer_node"
+          name="daib_explorer" output="screen">
+      <rosparam command="load" file="$(arg explorer_config)"/>
+      <param name="robot_id" value="0"/>
+      <param name="cooperation/enabled" value="true"/>
+      <param name="topics/odom" value="/uav0/daib_slam/odom"/>
+      <param name="topics/cloud" value="/uav0/daib_slam/planning_cloud"/>
+      <param name="topics/degenerate" value="/uav0/daib_slam/degenerate"/>
+      <param name="topics/degeneracy_score" value="/uav0/daib_slam/degeneracy_score"/>
+      <param name="topics/lio_runtime_ms" value="/uav0/daib_slam/lio_runtime_ms"/>
+      <param name="topics/pvbsm_delta" value="/uav0/daib_slam/pvbsm_delta"/>
+      <param name="topics/peer_pvbsm_delta" value="/uav1/daib_slam/pvbsm_delta"/>
+      <param name="topics/goal" value="/uav0/daib_explorer/goal"/>
+      <param name="topics/frontiers" value="/uav0/daib_explorer/frontiers"/>
+      <param name="topics/valid_cluster_frontiers" value="/uav0/daib_explorer/valid_cluster_frontiers"/>
+      <param name="topics/selected_cluster_frontiers" value="/uav0/daib_explorer/selected_cluster_frontiers"/>
+      <param name="topics/state" value="/uav0/daib_explorer/state"/>
+      <param name="topics/pvbsm_memory_stats" value="/uav0/daib_explorer/pvbsm_memory_stats"/>
+      <param name="topics/generation" value="/uav0/daib_explorer/generation"/>
+      <param name="topics/ready" value="/uav0/daib_explorer/ready"/>
+      <param name="topics/planning_cloud" value="/uav0/daib_explorer/planning_cloud"/>
+      <param name="topics/decision_status" value="/uav0/daib_decision/module_status"/>
+      <param name="topics/decision_event" value="/uav0/daib_decision/event"/>
+      <param name="topics/decision_command" value="/uav0/daib_decision/command"/>
+      <param name="topics/decision_ack" value="/uav0/daib_decision/action_ack"/>
+      <param name="topics/coexplore_task" value="/daib_coexplore/task"/>
+    </node>
+
+    <node pkg="daib_decision" type="daib_decision_node"
+          name="daib_decision" output="screen">
+      <rosparam command="load" file="$(arg decision_policy)"/>
+      <param name="mission_id" value="0"/>
+      <param name="topics/module_status" value="/uav0/daib_decision/module_status"/>
+      <param name="topics/event" value="/uav0/daib_decision/event"/>
+      <param name="topics/action_ack" value="/uav0/daib_decision/action_ack"/>
+      <param name="topics/command" value="/uav0/daib_decision/command"/>
+      <param name="topics/state" value="/uav0/daib_decision/state"/>
+      <param name="policy/require_px4" value="$(arg require_px4)"/>
+    </node>
+  </group>
+
+  <group ns="uav1">
+    <node pkg="daib_explorer" type="daib_explorer_node"
+          name="daib_explorer" output="screen">
+      <rosparam command="load" file="$(arg explorer_config)"/>
+      <param name="robot_id" value="1"/>
+      <param name="cooperation/enabled" value="true"/>
+      <param name="topics/odom" value="/uav1/daib_slam/odom"/>
+      <param name="topics/cloud" value="/uav1/daib_slam/planning_cloud"/>
+      <param name="topics/degenerate" value="/uav1/daib_slam/degenerate"/>
+      <param name="topics/degeneracy_score" value="/uav1/daib_slam/degeneracy_score"/>
+      <param name="topics/lio_runtime_ms" value="/uav1/daib_slam/lio_runtime_ms"/>
+      <param name="topics/pvbsm_delta" value="/uav1/daib_slam/pvbsm_delta"/>
+      <param name="topics/peer_pvbsm_delta" value="/uav0/daib_slam/pvbsm_delta"/>
+      <param name="topics/goal" value="/uav1/daib_explorer/goal"/>
+      <param name="topics/frontiers" value="/uav1/daib_explorer/frontiers"/>
+      <param name="topics/valid_cluster_frontiers" value="/uav1/daib_explorer/valid_cluster_frontiers"/>
+      <param name="topics/selected_cluster_frontiers" value="/uav1/daib_explorer/selected_cluster_frontiers"/>
+      <param name="topics/state" value="/uav1/daib_explorer/state"/>
+      <param name="topics/pvbsm_memory_stats" value="/uav1/daib_explorer/pvbsm_memory_stats"/>
+      <param name="topics/generation" value="/uav1/daib_explorer/generation"/>
+      <param name="topics/ready" value="/uav1/daib_explorer/ready"/>
+      <param name="topics/planning_cloud" value="/uav1/daib_explorer/planning_cloud"/>
+      <param name="topics/decision_status" value="/uav1/daib_decision/module_status"/>
+      <param name="topics/decision_event" value="/uav1/daib_decision/event"/>
+      <param name="topics/decision_command" value="/uav1/daib_decision/command"/>
+      <param name="topics/decision_ack" value="/uav1/daib_decision/action_ack"/>
+      <param name="topics/coexplore_task" value="/daib_coexplore/task"/>
+    </node>
+
+    <node pkg="daib_decision" type="daib_decision_node"
+          name="daib_decision" output="screen">
+      <rosparam command="load" file="$(arg decision_policy)"/>
+      <param name="mission_id" value="0"/>
+      <param name="topics/module_status" value="/uav1/daib_decision/module_status"/>
+      <param name="topics/event" value="/uav1/daib_decision/event"/>
+      <param name="topics/action_ack" value="/uav1/daib_decision/action_ack"/>
+      <param name="topics/command" value="/uav1/daib_decision/command"/>
+      <param name="topics/state" value="/uav1/daib_decision/state"/>
+      <param name="policy/require_px4" value="$(arg require_px4)"/>
+    </node>
+  </group>
+
+  <include file="$(find ego_planner)/launch/daib_single_uav.launch">
+    <arg name="drone_id" value="0"/>
+    <arg name="odom_topic" value="/uav0/daib_slam/odom"/>
+    <arg name="cloud_topic" value="/uav0/daib_explorer/planning_cloud"/>
+    <arg name="planner_goal_topic" value="/uav0/daib_ego/goal"/>
+    <arg name="position_cmd_topic" value="/uav0/daib_ego/position_cmd"/>
+    <arg name="world_frame" value="uav0/camera_init"/>
+    <arg name="explorer_goal_topic" value="/uav0/daib_explorer/goal"/>
+    <arg name="explorer_generation_topic" value="/uav0/daib_explorer/generation"/>
+    <arg name="explorer_ready_topic" value="/uav0/daib_explorer/ready"/>
+    <arg name="accepted_generation_topic" value="/uav0/daib_ego/accepted_generation"/>
+    <arg name="bridge_state_topic" value="/uav0/daib_ego/bridge_state"/>
+    <arg name="decision_status_topic" value="/uav0/daib_decision/module_status"/>
+    <arg name="decision_event_topic" value="/uav0/daib_decision/event"/>
+    <arg name="decision_command_topic" value="/uav0/daib_decision/command"/>
+    <arg name="decision_ack_topic" value="/uav0/daib_decision/action_ack"/>
+    <arg name="planner_result_topic" value="/uav0/daib_decision/planner_result"/>
+    <arg name="peer_to_local_x" value="$(arg uav1_in_uav0_x)"/>
+    <arg name="peer_to_local_y" value="$(arg uav1_in_uav0_y)"/>
+    <arg name="peer_to_local_z" value="$(arg uav1_in_uav0_z)"/>
+    <arg name="peer_to_local_yaw_deg" value="$(arg uav1_in_uav0_yaw_deg)"/>
+    <arg name="max_peer_drone_id" value="1"/>
+  </include>
+
+  <include file="$(find ego_planner)/launch/daib_single_uav.launch">
+    <arg name="drone_id" value="1"/>
+    <arg name="odom_topic" value="/uav1/daib_slam/odom"/>
+    <arg name="cloud_topic" value="/uav1/daib_explorer/planning_cloud"/>
+    <arg name="planner_goal_topic" value="/uav1/daib_ego/goal"/>
+    <arg name="position_cmd_topic" value="/uav1/daib_ego/position_cmd"/>
+    <arg name="world_frame" value="uav1/camera_init"/>
+    <arg name="explorer_goal_topic" value="/uav1/daib_explorer/goal"/>
+    <arg name="explorer_generation_topic" value="/uav1/daib_explorer/generation"/>
+    <arg name="explorer_ready_topic" value="/uav1/daib_explorer/ready"/>
+    <arg name="accepted_generation_topic" value="/uav1/daib_ego/accepted_generation"/>
+    <arg name="bridge_state_topic" value="/uav1/daib_ego/bridge_state"/>
+    <arg name="decision_status_topic" value="/uav1/daib_decision/module_status"/>
+    <arg name="decision_event_topic" value="/uav1/daib_decision/event"/>
+    <arg name="decision_command_topic" value="/uav1/daib_decision/command"/>
+    <arg name="decision_ack_topic" value="/uav1/daib_decision/action_ack"/>
+    <arg name="planner_result_topic" value="/uav1/daib_decision/planner_result"/>
+    <arg name="peer_to_local_x" value="$(arg uav0_in_uav1_x)"/>
+    <arg name="peer_to_local_y" value="$(arg uav0_in_uav1_y)"/>
+    <arg name="peer_to_local_z" value="$(arg uav0_in_uav1_z)"/>
+    <arg name="peer_to_local_yaw_deg" value="$(arg uav0_in_uav1_yaw_deg)"/>
+    <arg name="max_peer_drone_id" value="1"/>
+  </include>
+</launch>

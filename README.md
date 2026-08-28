@@ -2,8 +2,9 @@
 
 Degeneracy-Aware Information-Budgeted Exploration for resource-constrained
 UAVs. This ROS1 package owns exploration occupancy, incremental frontiers,
-coarse trajectory-visit memory, PVBSM structural memory and single-UAV goal
-selection. FAST-LIVO2 remains responsible only for localization/mapping and
+coarse trajectory-visit memory, PVBSM structural memory and local goal
+selection. An optional DAIB-CoExplore interface adds multi-source coverage
+queries and short-lived dual-UAV goal leases. FAST-LIVO2 remains responsible only for localization/mapping and
 publishes observations through standard ROS messages.
 
 Explorer contains an optional mission-lifetime coarse observation-memory
@@ -19,10 +20,10 @@ as current free-space or collision evidence.
   slow or the explorer crashes.
 - The cloud subscriber queue is `1`; a 10 Hz timer consumes only the latest
   cloud, so exploration never accumulates stale frames.
-- EGO-Swarm can later consume `/daib_explorer/goal` and
+- EGO-Swarm consumes `/daib_explorer/goal` and
   `/daib_explorer/planning_cloud` without depending on FAST-LIVO2 headers.
-- A future multi-UAV transport can exchange PVBSM deltas without changing the
-  high-rate local planning path.
+- Dual-UAV PVBSM and task-lease traffic stays outside the 10 Hz local safety
+  path; losing the peer therefore does not stop local mapping or planning.
 
 The internal schedule is deliberately multi-rate:
 
@@ -85,6 +86,8 @@ Inputs:
 | `/daib_slam/degeneracy_score` | `std_msgs/Float64` | Normalized minimum eigenvalue |
 | `/daib_slam/lio_runtime_ms` | `std_msgs/Float64` | Current LIO latency |
 | `/daib_slam/pvbsm_delta` | `sensor_msgs/PointCloud2` | 1 Hz planar/residual-voxel submap delta |
+| peer PVBSM topic (optional) | `sensor_msgs/PointCloud2` | Remote source records, transformed only for low-rate coverage queries |
+| `/daib_coexplore/task` (optional) | `CoExploreTask` | Peer goal lease and heartbeat |
 | `/daib_decision/command` | `DaibDecisionCommand` | Budget profile and explicit reselect/escape command |
 
 Outputs:
@@ -103,6 +106,7 @@ Outputs:
 | `/daib_decision/module_status` | `DaibModuleStatus` | Native Explorer readiness/health heartbeat |
 | `/daib_decision/event` | `DaibEvent` | Goal available/reached/blocked/stalled/no-frontier lifecycle |
 | `/daib_decision/action_ack` | `DaibActionAck` | Completion of reselect/escape commands targeted at Explorer |
+| `/daib_coexplore/task` (optional) | `CoExploreTask` | Local goal lease refreshed at 1 Hz |
 
 The EGO planning cloud is a view of occupied cells within 12 m of the current
 vehicle position, capped at 6000 points by default. This limits ROS
@@ -170,6 +174,11 @@ Start FAST-LIVO2 first or at the same time; the explorer publishes
 `/daib_explorer/ready=false` until fresh odometry and cloud data arrive.
 Use [`docs/RUNTIME_VALIDATION.md`](docs/RUNTIME_VALIDATION.md) for the complete
 pre-EGO acceptance test.
+
+For the dual-UAV chain, configure two unique FAST-LIVO2 `robot_id` and frame
+names, then use `launch/dual_uav_cooperation.launch`. See
+[`docs/DUAL_UAV_COOPERATION.md`](docs/DUAL_UAV_COOPERATION.md) for the frame
+contract, implemented boundaries and staged validation procedure.
 
 ## Safety boundary
 

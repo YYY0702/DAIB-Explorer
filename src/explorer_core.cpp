@@ -73,6 +73,11 @@ void ExplorerCore::setPvbsmBatchQuery(PvbsmBatchQuery query)
   pvbsm_batch_query_ = std::move(query);
 }
 
+void ExplorerCore::setPeerGoalLeases(std::vector<PeerGoalLease> leases)
+{
+  peer_goal_leases_ = std::move(leases);
+}
+
 void ExplorerCore::sanitizeConfig()
 {
   config_.robot_id = std::max(0, std::min(65535, config_.robot_id));
@@ -197,6 +202,11 @@ void ExplorerCore::sanitizeConfig()
       std::max(0.0, config_.pvbsm_observed_root_penalty);
   config_.pvbsm_degenerate_structure_bonus =
       std::max(0.0, config_.pvbsm_degenerate_structure_bonus);
+  config_.peer_goal_exclusion_radius_m =
+      std::max(config_.planning_voxel_size_m,
+               config_.peer_goal_exclusion_radius_m);
+  config_.peer_goal_score_epsilon =
+      std::max(0.0, config_.peer_goal_score_epsilon);
 }
 
 double ExplorerCore::distance(const Vec3 &a, const Vec3 &b)
@@ -1013,6 +1023,32 @@ double ExplorerCore::pvbsmScoreAdjustment(
   return adjustment;
 }
 
+bool ExplorerCore::peerOwnsCandidate(const Vec3 &point, double score,
+                                     double timestamp) const
+{
+  if (!config_.cooperation_enabled) return false;
+  for (const PeerGoalLease &peer : peer_goal_leases_)
+  {
+    if (!peer.active || peer.robot_id == config_.robot_id ||
+        peer.valid_until <= timestamp)
+      continue;
+    const double exclusion_radius = std::max(
+        config_.peer_goal_exclusion_radius_m, peer.exclusion_radius_m);
+    if (distance(point, peer.position) > exclusion_radius) continue;
+    if (peer.score > score + config_.peer_goal_score_epsilon) return true;
+    if (std::fabs(peer.score - score) <= config_.peer_goal_score_epsilon &&
+        peer.robot_id < static_cast<uint16_t>(config_.robot_id))
+      return true;
+  }
+  return false;
+}
+
+bool ExplorerCore::peerOwnsActiveGoal(double timestamp) const
+{
+  return decision_.valid &&
+         peerOwnsCandidate(decision_.position, decision_.score, timestamp);
+}
+
 void ExplorerCore::updateVisitMemory(const Vec3 &position)
 {
   const VoxelKey coverage_key = key(position, config_.coverage_voxel_size_m);
@@ -1061,9 +1097,15 @@ void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
 
   pruneFailedGoals(timestamp);
   const bool had_goal = decision_.valid;
+  const bool peer_conflict = had_goal && peerOwnsActiveGoal(timestamp);
   const bool failed_active_goal =
-      had_goal && (goal_blocked_ || goal_stalled_ || goal_timeout_);
-  if (failed_active_goal) recordFailedGoal(timestamp);
+      had_goal &&
+      (goal_blocked_ || goal_stalled_ || goal_timeout_ || peer_conflict);
+  // A peer-owned target is unavailable only while its lease is alive. Do not
+  // place it in the 30 s physical-failure cooldown, otherwise peer loss would
+  // delay legitimate task takeover after the short lease expires.
+  if (had_goal && (goal_blocked_ || goal_stalled_ || goal_timeout_))
+    recordFailedGoal(timestamp);
 
   const bool hold =
       had_goal && goal_set_time_ >= 0.0 &&
@@ -1092,6 +1134,14 @@ void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
   stats_.rejected_heading = 0;
   stats_.rejected_known_free_path = 0;
   stats_.rejected_failed_goal = 0;
+  stats_.rejected_peer_goal = 0;
+  stats_.active_peer_leases = static_cast<std::size_t>(std::count_if(
+      peer_goal_leases_.begin(), peer_goal_leases_.end(),
+      [this, timestamp](const PeerGoalLease &lease)
+      {
+        return lease.active && lease.valid_until > timestamp &&
+               lease.robot_id != config_.robot_id;
+      }));
   stats_.candidates_scored = 0;
   struct Candidate
   {
@@ -1304,6 +1354,11 @@ void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
         config_.distance_cost_weight * candidate.distance -
         config_.heading_cost_weight * candidate.rotation_cost_deg / 180.0;
     ++stats_.candidates_scored;
+    if (peerOwnsCandidate(candidate.point, score, timestamp))
+    {
+      ++stats_.rejected_peer_goal;
+      continue;
+    }
     if (score > best_score)
     {
       best_score = score;
@@ -1335,7 +1390,9 @@ void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
     decision_.updated = changed;
     decision_.state = "WAIT_FOR_FRONTIER";
     decision_.reason =
-        goal_reached_
+        peer_conflict
+            ? "peer_goal_conflict_no_safe_frontier"
+            : goal_reached_
             ? "goal_reached_no_next_frontier"
             : goal_blocked_ ? "goal_blocked_no_safe_frontier"
             : goal_stalled_ ? "goal_stalled_no_safe_frontier"
@@ -1391,6 +1448,7 @@ void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
   decision_.heading_change_deg = best_heading_change;
   decision_.state = degenerate_ ? "DEGRADED_EXPLORE" : "EXPLORE";
   if (!had_goal) decision_.reason = "initial_frontier";
+  else if (peer_conflict) decision_.reason = "peer_goal_conflict";
   else if (goal_reached_) decision_.reason = "goal_reached";
   else if (goal_blocked_) decision_.reason = "new_obstacle";
   else if (goal_stalled_) decision_.reason = "goal_stalled";

@@ -30,6 +30,22 @@ struct Quaternion
   double w = 1.0;
 };
 
+// A peer goal is treated as a short-lived distributed lease.  Positions are
+// expressed in this Explorer instance's planning frame before entering the
+// core, so the core remains independent from ROS/TF.
+struct PeerGoalLease
+{
+  uint16_t robot_id = 0;
+  uint64_t session = 0;
+  uint64_t sequence = 0;
+  uint64_t generation = 0;
+  Vec3 position;
+  double score = 0.0;
+  double exclusion_radius_m = 2.0;
+  double valid_until = 0.0;
+  bool active = false;
+};
+
 struct VoxelKey
 {
   int64_t x = 0;
@@ -139,6 +155,13 @@ struct ExplorerConfig
   double pvbsm_submap_coverage_penalty = 2.0;
   double pvbsm_observed_root_penalty = 1.5;
   double pvbsm_degenerate_structure_bonus = 0.75;
+
+  // DAIB-CoExplore: bounded, deterministic task deconfliction.  The smaller
+  // robot id wins an equal-score tie, so two peers converge without a central
+  // coordinator or unbounded auction traffic.
+  bool cooperation_enabled = false;
+  double peer_goal_exclusion_radius_m = 2.0;
+  double peer_goal_score_epsilon = 1e-3;
 };
 
 struct GoalDecision
@@ -200,6 +223,8 @@ struct ExplorerStats
   std::size_t rejected_heading = 0;
   std::size_t rejected_known_free_path = 0;
   std::size_t rejected_failed_goal = 0;
+  std::size_t rejected_peer_goal = 0;
+  std::size_t active_peer_leases = 0;
   std::size_t candidates_scored = 0;
   uint64_t reachability_checks = 0;
   uint64_t reachability_budget_exhaustions = 0;
@@ -219,6 +244,7 @@ public:
   void setDecisionProfile(int profile);
   bool requestGoalReselection(bool escape);
   void setPvbsmBatchQuery(PvbsmBatchQuery query);
+  void setPeerGoalLeases(std::vector<PeerGoalLease> leases);
   void update(const Vec3 &position, const Quaternion &orientation,
               const std::vector<Vec3> &points, double timestamp);
   bool consumeDecision(GoalDecision &decision);
@@ -293,6 +319,7 @@ private:
   };
   std::deque<FailedGoal> failed_goals_;
   PvbsmBatchQuery pvbsm_batch_query_;
+  std::vector<PeerGoalLease> peer_goal_leases_;
 
   static double distance(const Vec3 &a, const Vec3 &b);
   VoxelKey key(const Vec3 &point, double voxel_size) const;
@@ -335,6 +362,9 @@ private:
   void resetGoalProgress(const Vec3 &position, double timestamp);
   double frontierScore(const VoxelKey &key) const;
   double pvbsmScoreAdjustment(const PvbsmExplorationHint &hint) const;
+  bool peerOwnsCandidate(const Vec3 &point, double score,
+                         double timestamp) const;
+  bool peerOwnsActiveGoal(double timestamp) const;
   void updateVisitMemory(const Vec3 &position);
   void updateGoalStatus(const Vec3 &position, double timestamp);
   void updateDecision(const Vec3 &position, double timestamp);

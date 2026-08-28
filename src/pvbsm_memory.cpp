@@ -45,6 +45,16 @@ PvbsmMemory::PvbsmMemory(std::size_t max_records)
 {
 }
 
+std::vector<uint16_t> PvbsmMemory::sourceIds() const
+{
+  std::unordered_set<uint16_t> unique;
+  for (const auto &revision : revisions_)
+    unique.insert(revision.first.source_id);
+  std::vector<uint16_t> result(unique.begin(), unique.end());
+  std::sort(result.begin(), result.end());
+  return result;
+}
+
 bool PvbsmMemory::RootKey::operator==(const RootKey &other) const
 {
   return source_id == other.source_id &&

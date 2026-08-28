@@ -76,7 +76,36 @@ public:
   {
     explorer.config_.exploration_memory_filter_enabled = true;
   }
+
+  static bool peerOwns(ExplorerCore &explorer, const Vec3 &point,
+                       double score, double timestamp)
+  {
+    return explorer.peerOwnsCandidate(point, score, timestamp);
+  }
 };
+
+TEST(ExplorerCore, PeerGoalLeaseUsesScoreThenRobotIdTieBreak)
+{
+  ExplorerConfig config;
+  config.robot_id = 2;
+  config.cooperation_enabled = true;
+  config.peer_goal_exclusion_radius_m = 2.0;
+  ExplorerCore explorer(config);
+  PeerGoalLease peer;
+  peer.robot_id = 1;
+  peer.position = {5.0, 0.0, 1.0};
+  peer.score = 4.0;
+  peer.valid_until = 10.0;
+  peer.active = true;
+  explorer.setPeerGoalLeases({peer});
+
+  EXPECT_TRUE(ExplorerCoreTestPeer::peerOwns(
+      explorer, {5.5, 0.0, 1.0}, 4.0, 5.0));
+  EXPECT_FALSE(ExplorerCoreTestPeer::peerOwns(
+      explorer, {5.5, 0.0, 1.0}, 5.0, 5.0));
+  EXPECT_FALSE(ExplorerCoreTestPeer::peerOwns(
+      explorer, {5.5, 0.0, 1.0}, 4.0, 11.0));
+}
 
 TEST(ExplorerCore, SeparatesDisconnectedFrontiersInsideLegacyMetricBucket)
 {
@@ -742,6 +771,26 @@ TEST(PvbsmMemory, AppliesVersionsDeletionAndNegativeSubmaps)
   memory.applyDelta({deletion});
   EXPECT_EQ(memory.stats().root_count, 1U);
   EXPECT_EQ(memory.stats().deleted_roots, 1U);
+}
+
+TEST(PvbsmMemory, ReportsAllIndependentSources)
+{
+  PvbsmMemory memory(10);
+  PvbsmRecord first;
+  first.source_id = 7;
+  first.root[0] = 0;
+  first.root[1] = 0;
+  first.root[2] = 0;
+  first.revision = 1;
+  PvbsmRecord second = first;
+  second.source_id = 3;
+  second.root[0] = 1;
+  memory.applyDelta({first, second});
+
+  const std::vector<uint16_t> sources = memory.sourceIds();
+  ASSERT_EQ(sources.size(), 2U);
+  EXPECT_EQ(sources[0], 3U);
+  EXPECT_EQ(sources[1], 7U);
 }
 
 TEST(PvbsmMemory, EvictsOldestRootsAtRecordCapacity)

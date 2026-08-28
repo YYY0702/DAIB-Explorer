@@ -9,6 +9,7 @@ add_compile_options(-Wall -Wextra -Wpedantic)
 find_package(catkin REQUIRED COMPONENTS
   daib_decision
   geometry_msgs
+  message_generation
   nav_msgs
   pcl_conversions
   pcl_ros
@@ -19,18 +20,23 @@ find_package(catkin REQUIRED COMPONENTS
 )
 find_package(PCL REQUIRED COMPONENTS common filters)
 
+add_message_files(FILES CoExploreTask.msg)
+generate_messages(DEPENDENCIES geometry_msgs std_msgs)
+
 catkin_package(
   INCLUDE_DIRS include
   LIBRARIES daib_explorer_core
-  CATKIN_DEPENDS daib_decision geometry_msgs nav_msgs pcl_conversions pcl_ros roscpp sensor_msgs std_msgs tf
+  CATKIN_DEPENDS daib_decision geometry_msgs message_runtime nav_msgs pcl_conversions pcl_ros roscpp sensor_msgs std_msgs tf
 )
 
 include_directories(include ${catkin_INCLUDE_DIRS} ${PCL_INCLUDE_DIRS})
 
 add_library(daib_explorer_core src/explorer_core.cpp src/pvbsm_memory.cpp)
+add_dependencies(daib_explorer_core ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 target_link_libraries(daib_explorer_core ${catkin_LIBRARIES})
 
 add_executable(daib_explorer_node src/explorer_node.cpp)
+add_dependencies(daib_explorer_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 target_link_libraries(daib_explorer_node daib_explorer_core ${catkin_LIBRARIES} ${PCL_LIBRARIES})
 
 if(CATKIN_ENABLE_TESTING)

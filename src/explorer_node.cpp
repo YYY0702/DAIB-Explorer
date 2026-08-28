@@ -8,8 +8,10 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
+#include <daib_explorer/CoExploreTask.h>
 #include <geometry_msgs/PoseStamped.h>
 #include <nav_msgs/Odometry.h>
 #include <pcl/point_cloud.h>
@@ -24,6 +26,7 @@
 #include <std_msgs/UInt64.h>
 #include <std_msgs/UInt64MultiArray.h>
 #include <tf/transform_datatypes.h>
+#include <tf/transform_listener.h>
 
 #include <daib_decision/DaibActionAck.h>
 #include <daib_decision/DaibDecisionCommand.h>
@@ -41,6 +44,7 @@ public:
     ExplorerConfig config;
     readParameters(config);
     core_ = std::make_unique<ExplorerCore>(config);
+    robot_id_ = static_cast<uint16_t>(config.robot_id);
     if (pvbsm_memory_enabled_)
       pvbsm_memory_ = std::make_unique<PvbsmMemory>(
           static_cast<std::size_t>(pvbsm_memory_max_records_));
@@ -59,13 +63,8 @@ public:
            covered_root_target](
               const std::vector<PvbsmQueryPoint> &points)
           {
-            std::lock_guard<std::mutex> lock(pvbsm_mutex_);
-            return pvbsm_memory_->queryExplorationHints(
-                points,
-                pvbsm_query_source_id_,
-                root_voxel_size,
-                pvbsm_expected_submap_edge_roots_,
-                covered_root_target);
+            return queryFusedPvbsmHints(
+                points, root_voxel_size, covered_root_target);
           });
     }
 
@@ -79,11 +78,20 @@ public:
     runtime_sub_ =
         nh_.subscribe(runtime_topic_, 1, &ExplorerNode::runtimeCallback, this);
     if (pvbsm_memory_)
+    {
       pvbsm_sub_ = nh_.subscribe(
           pvbsm_topic_, 2, &ExplorerNode::pvbsmCallback, this);
+      if (cooperation_enabled_ && !peer_pvbsm_topic_.empty())
+        peer_pvbsm_sub_ = nh_.subscribe(
+            peer_pvbsm_topic_, 2, &ExplorerNode::pvbsmCallback, this);
+    }
     decision_command_sub_ = nh_.subscribe(
         decision_command_topic_, 10,
         &ExplorerNode::decisionCommandCallback, this);
+    if (cooperation_enabled_)
+      coexplore_task_sub_ = nh_.subscribe(
+          coexplore_task_topic_, 20,
+          &ExplorerNode::coexploreTaskCallback, this);
 
     goal_pub_ =
         nh_.advertise<geometry_msgs::PoseStamped>(goal_topic_, 1, true);
@@ -108,6 +116,9 @@ public:
         decision_event_topic_, 10);
     decision_ack_pub_ = nh_.advertise<daib_decision::DaibActionAck>(
         decision_ack_topic_, 10);
+    if (cooperation_enabled_)
+      coexplore_task_pub_ = nh_.advertise<daib_explorer::CoExploreTask>(
+          coexplore_task_topic_, 10);
     if (pvbsm_memory_)
       pvbsm_stats_pub_ = nh_.advertise<std_msgs::UInt64MultiArray>(
           pvbsm_stats_topic_, 1, true);
@@ -121,6 +132,8 @@ public:
                     << ", map_update_rate=" << map_update_rate_hz_ << " Hz"
                     << ", pvbsm_memory="
                     << (pvbsm_memory_ ? "enabled" : "disabled")
+                    << ", cooperation="
+                    << (cooperation_enabled_ ? "enabled" : "disabled")
                     << ", legacy_submap_memory=disabled");
   }
 
@@ -133,7 +146,9 @@ private:
   ros::Subscriber score_sub_;
   ros::Subscriber runtime_sub_;
   ros::Subscriber pvbsm_sub_;
+  ros::Subscriber peer_pvbsm_sub_;
   ros::Subscriber decision_command_sub_;
+  ros::Subscriber coexplore_task_sub_;
   ros::Publisher goal_pub_;
   ros::Publisher frontiers_pub_;
   ros::Publisher valid_cluster_frontiers_pub_;
@@ -145,6 +160,7 @@ private:
   ros::Publisher decision_status_pub_;
   ros::Publisher decision_event_pub_;
   ros::Publisher decision_ack_pub_;
+  ros::Publisher coexplore_task_pub_;
   ros::Publisher pvbsm_stats_pub_;
   ros::Timer map_timer_;
   std::unique_ptr<ExplorerCore> core_;
@@ -153,6 +169,8 @@ private:
   std::mutex input_mutex_;
   std::mutex update_mutex_;
   std::mutex pvbsm_mutex_;
+  std::mutex peer_mutex_;
+  tf::TransformListener tf_listener_;
   nav_msgs::OdometryConstPtr latest_odom_;
   sensor_msgs::PointCloud2ConstPtr latest_cloud_;
   ros::WallTime last_odom_receive_;
@@ -185,6 +203,7 @@ private:
   std::string decision_event_topic_ = "/daib_decision/event";
   std::string decision_command_topic_ = "/daib_decision/command";
   std::string decision_ack_topic_ = "/daib_decision/action_ack";
+  std::string coexplore_task_topic_ = "/daib_coexplore/task";
   double map_update_rate_hz_ = 10.0;
   double input_timeout_s_ = 1.0;
   double ready_heartbeat_rate_hz_ = 1.0;
@@ -206,6 +225,27 @@ private:
   uint64_t latest_decision_session_ = 0;
   uint64_t latest_decision_command_id_ = 0;
   uint64_t published_generation_ = 0;
+  uint16_t robot_id_ = 0;
+  bool cooperation_enabled_ = false;
+  int expected_peer_count_ = 1;
+  double peer_goal_ttl_s_ = 3.0;
+  double peer_goal_exclusion_radius_m_ = 2.0;
+  double peer_transform_timeout_s_ = 0.05;
+  double peer_max_future_skew_s_ = 0.5;
+  uint64_t coexplore_session_ = ros::WallTime::now().toNSec();
+  uint64_t coexplore_sequence_ = 0;
+  ros::WallTime last_coexplore_publish_;
+  std::string planning_frame_;
+  GoalDecision leased_goal_;
+  bool leased_goal_active_ = false;
+  struct PeerTaskState
+  {
+    PeerGoalLease lease;
+    ros::WallTime last_receive;
+  };
+  std::unordered_map<uint16_t, PeerTaskState> peer_tasks_;
+  std::unordered_map<uint16_t, std::string> pvbsm_source_frames_;
+  std::string peer_pvbsm_topic_;
 
   void readParameters(ExplorerConfig &config)
   {
@@ -216,6 +256,8 @@ private:
     private_nh_.param("topics/degeneracy_score", score_topic_, score_topic_);
     private_nh_.param("topics/lio_runtime_ms", runtime_topic_, runtime_topic_);
     private_nh_.param("topics/pvbsm_delta", pvbsm_topic_, pvbsm_topic_);
+    private_nh_.param("topics/peer_pvbsm_delta",
+                      peer_pvbsm_topic_, peer_pvbsm_topic_);
     private_nh_.param("topics/goal", goal_topic_, goal_topic_);
     private_nh_.param("topics/frontiers", frontiers_topic_, frontiers_topic_);
     private_nh_.param("topics/valid_cluster_frontiers",
@@ -242,6 +284,8 @@ private:
                       decision_command_topic_, decision_command_topic_);
     private_nh_.param("topics/decision_ack",
                       decision_ack_topic_, decision_ack_topic_);
+    private_nh_.param("topics/coexplore_task",
+                      coexplore_task_topic_, coexplore_task_topic_);
 
     private_nh_.param("map_update_rate_hz", map_update_rate_hz_, 10.0);
     private_nh_.param("input_timeout_s", input_timeout_s_, 1.0);
@@ -271,6 +315,21 @@ private:
         "max_pvbsm_records_per_delta",
         max_pvbsm_records_per_delta_,
         max_pvbsm_records_per_delta_);
+    private_nh_.param("cooperation/enabled",
+                      cooperation_enabled_, cooperation_enabled_);
+    private_nh_.param("cooperation/expected_peer_count",
+                      expected_peer_count_, expected_peer_count_);
+    private_nh_.param("cooperation/goal_ttl_s",
+                      peer_goal_ttl_s_, peer_goal_ttl_s_);
+    private_nh_.param("cooperation/goal_exclusion_radius_m",
+                      peer_goal_exclusion_radius_m_,
+                      peer_goal_exclusion_radius_m_);
+    private_nh_.param("cooperation/transform_timeout_s",
+                      peer_transform_timeout_s_,
+                      peer_transform_timeout_s_);
+    private_nh_.param("cooperation/max_future_skew_s",
+                      peer_max_future_skew_s_,
+                      peer_max_future_skew_s_);
     map_update_rate_hz_ = std::max(0.2, map_update_rate_hz_);
     input_timeout_s_ = std::max(0.1, input_timeout_s_);
     ready_heartbeat_rate_hz_ = std::max(0.1, ready_heartbeat_rate_hz_);
@@ -283,8 +342,19 @@ private:
     pvbsm_memory_max_records_ = std::max(1, pvbsm_memory_max_records_);
     max_pvbsm_records_per_delta_ =
         std::max(1, max_pvbsm_records_per_delta_);
+    expected_peer_count_ = std::max(0, expected_peer_count_);
+    peer_goal_ttl_s_ = std::max(0.5, peer_goal_ttl_s_);
+    peer_goal_exclusion_radius_m_ =
+        std::max(0.5, peer_goal_exclusion_radius_m_);
+    peer_transform_timeout_s_ = std::max(0.0, peer_transform_timeout_s_);
+    peer_max_future_skew_s_ = std::max(0.0, peer_max_future_skew_s_);
 
     private_nh_.param("robot_id", config.robot_id, config.robot_id);
+    config.cooperation_enabled = cooperation_enabled_;
+    config.peer_goal_exclusion_radius_m = peer_goal_exclusion_radius_m_;
+    private_nh_.param("cooperation/score_tie_epsilon",
+                      config.peer_goal_score_epsilon,
+                      config.peer_goal_score_epsilon);
     private_nh_.param("planning_voxel_size_m",
                       config.planning_voxel_size_m,
                       config.planning_voxel_size_m);
@@ -529,6 +599,82 @@ private:
     lio_runtime_ms_ = message->data;
   }
 
+  std::vector<PvbsmExplorationHint> queryFusedPvbsmHints(
+      const std::vector<PvbsmQueryPoint> &local_points,
+      double root_voxel_size,
+      std::size_t covered_root_target)
+  {
+    std::vector<PvbsmExplorationHint> fused(local_points.size());
+    std::vector<uint16_t> sources;
+    std::unordered_map<uint16_t, std::string> source_frames;
+    {
+      std::lock_guard<std::mutex> lock(pvbsm_mutex_);
+      if (!pvbsm_memory_) return fused;
+      sources = pvbsm_memory_->sourceIds();
+      source_frames = pvbsm_source_frames_;
+    }
+    std::string local_frame;
+    {
+      std::lock_guard<std::mutex> lock(peer_mutex_);
+      local_frame = planning_frame_;
+    }
+
+    for (uint16_t source_id : sources)
+    {
+      std::vector<PvbsmQueryPoint> source_points = local_points;
+      if (source_id != pvbsm_query_source_id_)
+      {
+        const auto source_frame = source_frames.find(source_id);
+        if (local_frame.empty() || source_frame == source_frames.end() ||
+            source_frame->second.empty())
+          continue;
+        try
+        {
+          tf::StampedTransform transform;
+          tf_listener_.lookupTransform(
+              source_frame->second, local_frame, ros::Time(0), transform);
+          for (std::size_t index = 0; index < local_points.size(); ++index)
+          {
+            const tf::Vector3 local(
+                local_points[index].x,
+                local_points[index].y,
+                local_points[index].z);
+            const tf::Vector3 remote = transform * local;
+            source_points[index] = {remote.x(), remote.y(), remote.z()};
+          }
+        }
+        catch (const tf::TransformException &error)
+        {
+          ROS_WARN_THROTTLE(
+              2.0, "[ DAIB CoExplore ] remote PVBSM TF unavailable: %s",
+              error.what());
+          continue;
+        }
+      }
+
+      std::vector<PvbsmExplorationHint> hints;
+      {
+        std::lock_guard<std::mutex> lock(pvbsm_mutex_);
+        hints = pvbsm_memory_->queryExplorationHints(
+            source_points, source_id, root_voxel_size,
+            pvbsm_expected_submap_edge_roots_, covered_root_target);
+      }
+      if (hints.size() != fused.size()) continue;
+      for (std::size_t index = 0; index < fused.size(); ++index)
+      {
+        fused[index].root_observed =
+            fused[index].root_observed || hints[index].root_observed;
+        fused[index].submap_observed =
+            fused[index].submap_observed || hints[index].submap_observed;
+        fused[index].submap_coverage = std::max(
+            fused[index].submap_coverage, hints[index].submap_coverage);
+        fused[index].structural_support = std::max(
+            fused[index].structural_support, hints[index].structural_support);
+      }
+    }
+    return fused;
+  }
+
   void pvbsmCallback(const sensor_msgs::PointCloud2ConstPtr &message)
   {
     if (!pvbsm_memory_) return;
@@ -616,23 +762,13 @@ private:
       return;
     }
 
-    bool contains_query_source = false;
     bool submap_edge_mismatch = false;
     for (const PvbsmRecord &record : records)
     {
-      if (record.source_id != pvbsm_query_source_id_) continue;
-      contains_query_source = true;
       submap_edge_mismatch =
           submap_edge_mismatch ||
           record.submap_edge_roots !=
               pvbsm_expected_submap_edge_roots_;
-    }
-    if (!records.empty() && !contains_query_source)
-    {
-      ROS_WARN_THROTTLE(
-          5.0,
-          "[ DAIB Explorer PVBSM ] no records match Explorer robot_id; "
-          "long-term revisit scoring will have no local evidence");
     }
     if (submap_edge_mismatch)
     {
@@ -643,8 +779,12 @@ private:
     }
 
     std::lock_guard<std::mutex> lock(pvbsm_mutex_);
+    for (const PvbsmRecord &record : records)
+      if (!message->header.frame_id.empty())
+        pvbsm_source_frames_[record.source_id] = message->header.frame_id;
     pvbsm_memory_->applyDelta(records);
     const PvbsmMemoryStats &stats = pvbsm_memory_->stats();
+    const std::size_t source_count = pvbsm_memory_->sourceIds().size();
     std_msgs::UInt64MultiArray stats_message;
     stats_message.data = {
         stats.root_count,
@@ -657,13 +797,15 @@ private:
         stats.deleted_roots,
         stats.capacity_evictions,
         stats.source_session_resets,
-        stats.detailed_root_count};
+        stats.detailed_root_count,
+        source_count};
     pvbsm_stats_pub_.publish(stats_message);
     ROS_INFO_STREAM_THROTTLE(
         1.0, "[ DAIB Explorer PVBSM ] roots=" << stats.root_count
                  << ", detailed_roots=" << stats.detailed_root_count
                  << ", records=" << stats.record_count
                  << ", submaps=" << stats.submap_count
+                 << ", sources=" << source_count
                  << ", stale_rejected="
                  << stats.rejected_stale_root_updates);
   }
@@ -768,6 +910,195 @@ private:
     }
   }
 
+  void coexploreTaskCallback(
+      const daib_explorer::CoExploreTaskConstPtr &message)
+  {
+    if (!cooperation_enabled_ || message->robot_id == robot_id_) return;
+    if (message->header.frame_id.empty())
+    {
+      ROS_WARN_THROTTLE(
+          2.0, "[ DAIB CoExplore ] rejecting peer task without frame_id");
+      return;
+    }
+    if (!std::isfinite(message->goal.position.x) ||
+        !std::isfinite(message->goal.position.y) ||
+        !std::isfinite(message->goal.position.z) ||
+        !std::isfinite(message->score) ||
+        !std::isfinite(message->exclusion_radius_m))
+    {
+      ROS_WARN_THROTTLE(
+          2.0, "[ DAIB CoExplore ] rejecting non-finite peer task");
+      return;
+    }
+    const ros::Time ros_now = ros::Time::now();
+    if (!message->header.stamp.isZero())
+    {
+      const double age = (ros_now - message->header.stamp).toSec();
+      if (age > peer_goal_ttl_s_ || age < -peer_max_future_skew_s_)
+      {
+        ROS_WARN_THROTTLE(
+            2.0, "[ DAIB CoExplore ] rejecting stale/future peer task");
+        return;
+      }
+    }
+
+    geometry_msgs::PoseStamped local_goal;
+    geometry_msgs::PoseStamped peer_goal;
+    peer_goal.header = message->header;
+    peer_goal.pose = message->goal;
+    // Task arbitration uses only the position; ignore a malformed or
+    // convention-dependent peer yaw while transforming between map frames.
+    peer_goal.pose.orientation.x = 0.0;
+    peer_goal.pose.orientation.y = 0.0;
+    peer_goal.pose.orientation.z = 0.0;
+    peer_goal.pose.orientation.w = 1.0;
+    std::string local_frame;
+    {
+      std::lock_guard<std::mutex> lock(peer_mutex_);
+      local_frame = planning_frame_;
+    }
+    if (local_frame.empty()) return;
+    try
+    {
+      if (peer_goal.header.frame_id == local_frame)
+        local_goal = peer_goal;
+      else
+      {
+        tf_listener_.waitForTransform(
+            local_frame, peer_goal.header.frame_id,
+            peer_goal.header.stamp.isZero() ? ros::Time(0)
+                                            : peer_goal.header.stamp,
+            ros::Duration(peer_transform_timeout_s_));
+        tf_listener_.transformPose(local_frame, peer_goal, local_goal);
+      }
+    }
+    catch (const tf::TransformException &error)
+    {
+      ROS_WARN_THROTTLE(
+          2.0, "[ DAIB CoExplore ] peer task TF unavailable: %s",
+          error.what());
+      return;
+    }
+    if (!std::isfinite(local_goal.pose.position.x) ||
+        !std::isfinite(local_goal.pose.position.y) ||
+        !std::isfinite(local_goal.pose.position.z))
+    {
+      ROS_WARN_THROTTLE(
+          2.0, "[ DAIB CoExplore ] rejecting invalid transformed task");
+      return;
+    }
+
+    std::lock_guard<std::mutex> lock(peer_mutex_);
+    const auto previous = peer_tasks_.find(message->robot_id);
+    if (previous != peer_tasks_.end())
+    {
+      const PeerGoalLease &lease = previous->second.lease;
+      if (message->session < lease.session ||
+          (message->session == lease.session &&
+           message->sequence <= lease.sequence))
+        return;
+    }
+    PeerTaskState state;
+    state.lease.robot_id = message->robot_id;
+    state.lease.session = message->session;
+    state.lease.sequence = message->sequence;
+    state.lease.generation = message->generation;
+    state.lease.position = {
+        local_goal.pose.position.x,
+        local_goal.pose.position.y,
+        local_goal.pose.position.z};
+    state.lease.score = message->score;
+    state.lease.exclusion_radius_m = std::max(
+        0.5, message->exclusion_radius_m);
+    const double local_now = ros_now.toSec();
+    const double declared_expiry = message->valid_until.isZero()
+                                       ? local_now + peer_goal_ttl_s_
+                                       : message->valid_until.toSec();
+    // A remote clock error must never create an unbounded ownership lease.
+    state.lease.valid_until = std::min(
+        declared_expiry, local_now + peer_goal_ttl_s_);
+    state.lease.active = message->active;
+    state.last_receive = ros::WallTime::now();
+    peer_tasks_[message->robot_id] = state;
+  }
+
+  void updatePeerLeases(double timestamp)
+  {
+    if (!cooperation_enabled_) return;
+    std::vector<PeerGoalLease> leases;
+    std::lock_guard<std::mutex> lock(peer_mutex_);
+    for (auto peer = peer_tasks_.begin(); peer != peer_tasks_.end();)
+    {
+      if (peer->second.lease.valid_until + peer_goal_ttl_s_ < timestamp)
+      {
+        peer = peer_tasks_.erase(peer);
+        continue;
+      }
+      if (peer->second.lease.valid_until > timestamp)
+        leases.push_back(peer->second.lease);
+      ++peer;
+    }
+    core_->setPeerGoalLeases(std::move(leases));
+  }
+
+  void publishPeerHealth()
+  {
+    if (!cooperation_enabled_) return;
+    const ros::WallTime now = ros::WallTime::now();
+    std::size_t fresh_peers = 0;
+    {
+      std::lock_guard<std::mutex> lock(peer_mutex_);
+      for (const auto &peer : peer_tasks_)
+        if ((now - peer.second.last_receive).toSec() <= peer_goal_ttl_s_)
+          ++fresh_peers;
+    }
+    const bool ready = fresh_peers >= static_cast<std::size_t>(expected_peer_count_);
+    daib_decision::DaibModuleStatus status;
+    status.header.stamp = ros::Time::now();
+    status.source = daib_decision::DaibModuleStatus::SOURCE_PEER;
+    status.session = decision_source_session_;
+    status.sequence = ++decision_status_sequence_;
+    status.valid_for_s = static_cast<float>(2.0 * peer_goal_ttl_s_);
+    status.health = ready
+                        ? daib_decision::DaibModuleStatus::HEALTH_NOMINAL
+                        : daib_decision::DaibModuleStatus::HEALTH_DEGRADED;
+    status.fault_mask = ready
+                            ? daib_decision::DaibModuleStatus::FAULT_NONE
+                            : daib_decision::DaibModuleStatus::PEER_LINK_LOST;
+    status.ready = ready;
+    status.generation = published_generation_;
+    status.metric_primary = static_cast<double>(fresh_peers);
+    status.metric_secondary = static_cast<double>(expected_peer_count_);
+    decision_status_pub_.publish(status);
+  }
+
+  void publishCoexploreLease(bool force = false)
+  {
+    if (!cooperation_enabled_ || planning_frame_.empty()) return;
+    const ros::WallTime wall_now = ros::WallTime::now();
+    if (!force && !last_coexplore_publish_.isZero() &&
+        (wall_now - last_coexplore_publish_).toSec() < 1.0)
+      return;
+    last_coexplore_publish_ = wall_now;
+    daib_explorer::CoExploreTask message;
+    message.header.stamp = ros::Time::now();
+    message.header.frame_id = planning_frame_;
+    message.robot_id = robot_id_;
+    message.session = coexplore_session_;
+    message.sequence = ++coexplore_sequence_;
+    message.generation = leased_goal_.generation;
+    message.goal.position.x = leased_goal_.position.x;
+    message.goal.position.y = leased_goal_.position.y;
+    message.goal.position.z = leased_goal_.position.z;
+    message.goal.orientation =
+        tf::createQuaternionMsgFromYaw(leased_goal_.yaw);
+    message.score = leased_goal_.score;
+    message.exclusion_radius_m = peer_goal_exclusion_radius_m_;
+    message.valid_until = message.header.stamp + ros::Duration(peer_goal_ttl_s_);
+    message.active = leased_goal_active_;
+    coexplore_task_pub_.publish(message);
+  }
+
   std::vector<Vec3> convertCloud(const sensor_msgs::PointCloud2 &cloud) const
   {
     std::vector<Vec3> points;
@@ -857,6 +1188,12 @@ private:
       ROS_WARN_THROTTLE(2.0, "[ DAIB Explorer ] waiting for fresh odometry and cloud");
       return;
     }
+    {
+      std::lock_guard<std::mutex> lock(peer_mutex_);
+      planning_frame_ = cloud->header.frame_id;
+    }
+    publishCoexploreLease();
+    publishPeerHealth();
     if (cloud_sequence == processed_cloud_sequence_)
     {
       publishReady(true);
@@ -904,6 +1241,7 @@ private:
     const double timestamp =
         cloud->header.stamp.isZero() ? ros::Time::now().toSec()
                                     : cloud->header.stamp.toSec();
+    updatePeerLeases(timestamp);
     const uint64_t previous_frontier_cycle =
         core_->stats().frontier_update_cycles;
     const uint64_t previous_goal_cycle =
@@ -974,6 +1312,8 @@ private:
             previous_generation);
       if (decision.valid)
       {
+        leased_goal_ = decision;
+        leased_goal_active_ = true;
         geometry_msgs::PoseStamped goal;
         goal.header = cloud->header;
         goal.pose.position.x = decision.position.x;
@@ -990,6 +1330,7 @@ private:
         publishDecisionEvent(
             daib_decision::DaibEvent::GOAL_AVAILABLE,
             decision.generation);
+        publishCoexploreLease(true);
         ROS_INFO_STREAM("[ DAIB Explorer ] generation=" << decision.generation
                         << ", state=" << decision.state
                         << ", reason=" << decision.reason
@@ -1004,6 +1345,8 @@ private:
       }
       else
       {
+        leased_goal_active_ = false;
+        publishCoexploreLease(true);
         publishDecisionEvent(
             daib_decision::DaibEvent::NO_SAFE_FRONTIER,
             previous_generation,

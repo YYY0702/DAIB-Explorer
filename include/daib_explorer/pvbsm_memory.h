@@ -59,6 +59,7 @@ public:
       double root_voxel_size_m,
       uint8_t submap_edge_roots,
       std::size_t covered_root_target) const;
+  std::vector<uint16_t> sourceIds() const;
   const PvbsmMemoryStats &stats() const { return stats_; }
 
 private:
