@@ -38,6 +38,14 @@ cooperation:
   score_tie_epsilon: 0.001
   transform_timeout_s: 0.05
   max_future_skew_s: 0.5
+  max_anchor_translation_m: 100.0
+  max_anchor_roll_pitch_deg: 10.0
+  # Expired peer tasks are retained as bounded takeover regions. A healthy
+  # UAV still regenerates a safe local viewpoint rather than replaying a stale
+  # peer goal or trajectory.
+  takeover_region_radius_m: 5.0
+  takeover_score_bonus: 4.0
+  takeover_task_ttl_s: 60.0
 
 # The latest cloud replaces any pending cloud. Mapping runs at this independent
 # timer and the queue-of-one handoff never build a backlog inside FAST-LIVO2.
@@ -71,6 +79,10 @@ pvbsm_unseen_submap_bonus: 1.0
 pvbsm_submap_coverage_penalty: 2.0
 pvbsm_observed_root_penalty: 1.5
 pvbsm_degenerate_structure_bonus: 0.75
+# Cross-source coverage is fused conservatively. If aligned sources disagree
+# by more than this ratio, use the lower coverage and revisit the region.
+pvbsm_source_conflict_tolerance: 0.35
+pvbsm_conflict_revisit_bonus: 0.5
 
 # High-frequency rolling occupancy map used by frontier selection and the
 # EGO-Swarm planning bridge. It is intentionally independent of the SLAM map.

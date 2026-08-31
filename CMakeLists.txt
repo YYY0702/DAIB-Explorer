@@ -20,8 +20,11 @@ find_package(catkin REQUIRED COMPONENTS
 )
 find_package(PCL REQUIRED COMPONENTS common filters)
 
-add_message_files(FILES CoExploreTask.msg)
-generate_messages(DEPENDENCIES geometry_msgs std_msgs)
+add_message_files(FILES
+  CoExploreTask.msg
+  PvbsmSync.msg
+)
+generate_messages(DEPENDENCIES geometry_msgs sensor_msgs std_msgs)
 
 catkin_package(
   INCLUDE_DIRS include
@@ -39,6 +42,10 @@ add_executable(daib_explorer_node src/explorer_node.cpp)
 add_dependencies(daib_explorer_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 target_link_libraries(daib_explorer_node daib_explorer_core ${catkin_LIBRARIES} ${PCL_LIBRARIES})
 
+add_executable(pvbsm_sync_relay_node src/pvbsm_sync_relay_node.cpp)
+add_dependencies(pvbsm_sync_relay_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+target_link_libraries(pvbsm_sync_relay_node ${catkin_LIBRARIES})
+
 if(CATKIN_ENABLE_TESTING)
   find_package(rostest REQUIRED)
   catkin_add_gtest(explorer_core_test test/explorer_core_test.cpp)
@@ -46,9 +53,10 @@ if(CATKIN_ENABLE_TESTING)
     target_link_libraries(explorer_core_test daib_explorer_core)
   endif()
   add_rostest(test/runtime_contract.test)
+  add_rostest(test/pvbsm_sync_relay.test)
 endif()
 
-install(TARGETS daib_explorer_core daib_explorer_node
+install(TARGETS daib_explorer_core daib_explorer_node pvbsm_sync_relay_node
   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})

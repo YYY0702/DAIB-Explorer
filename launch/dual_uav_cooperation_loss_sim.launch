@@ -1,0 +1,31 @@
+<launch>
+  <!-- Fault-injection wrapper for rosbag/Gazebo/SITL.  It starts the normal
+       dual-UAV stack and drops PVBSM DATA packets at each receiver before the
+       application-level NACK/replay recovery path. -->
+  <arg name="loss_probability" default="0.20"/>
+  <arg name="uav1_in_uav0_x" default="0.0"/>
+  <arg name="uav1_in_uav0_y" default="0.0"/>
+  <arg name="uav1_in_uav0_z" default="0.0"/>
+  <arg name="uav1_in_uav0_yaw_rad" default="0.0"/>
+  <arg name="uav1_in_uav0_yaw_deg" default="0.0"/>
+  <arg name="uav0_in_uav1_x" default="0.0"/>
+  <arg name="uav0_in_uav1_y" default="0.0"/>
+  <arg name="uav0_in_uav1_z" default="0.0"/>
+  <arg name="uav0_in_uav1_yaw_deg" default="0.0"/>
+
+  <include file="$(find daib_explorer)/launch/dual_uav_cooperation.launch">
+    <arg name="use_sim_time" value="true"/>
+    <arg name="require_px4" value="false"/>
+    <arg name="uav0_receive_drop_probability" value="$(arg loss_probability)"/>
+    <arg name="uav1_receive_drop_probability" value="$(arg loss_probability)"/>
+    <arg name="uav1_in_uav0_x" value="$(arg uav1_in_uav0_x)"/>
+    <arg name="uav1_in_uav0_y" value="$(arg uav1_in_uav0_y)"/>
+    <arg name="uav1_in_uav0_z" value="$(arg uav1_in_uav0_z)"/>
+    <arg name="uav1_in_uav0_yaw_rad" value="$(arg uav1_in_uav0_yaw_rad)"/>
+    <arg name="uav1_in_uav0_yaw_deg" value="$(arg uav1_in_uav0_yaw_deg)"/>
+    <arg name="uav0_in_uav1_x" value="$(arg uav0_in_uav1_x)"/>
+    <arg name="uav0_in_uav1_y" value="$(arg uav0_in_uav1_y)"/>
+    <arg name="uav0_in_uav1_z" value="$(arg uav0_in_uav1_z)"/>
+    <arg name="uav0_in_uav1_yaw_deg" value="$(arg uav0_in_uav1_yaw_deg)"/>
+  </include>
+</launch>

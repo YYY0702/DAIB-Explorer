@@ -178,7 +178,11 @@ pre-EGO acceptance test.
 For the dual-UAV chain, configure two unique FAST-LIVO2 `robot_id` and frame
 names, then use `launch/dual_uav_cooperation.launch`. See
 [`docs/DUAL_UAV_COOPERATION.md`](docs/DUAL_UAV_COOPERATION.md) for the frame
-contract, implemented boundaries and staged validation procedure.
+contract and implemented boundaries, and
+[`docs/DUAL_UAV_DEPLOYMENT_GUIDE.md`](docs/DUAL_UAV_DEPLOYMENT_GUIDE.md) for
+the complete build/start/acceptance sequence. The simulation-only
+`dual_uav_cooperation_loss_sim.launch` injects receiver-side PVBSM loss and
+exercises the sequence/checksum/NACK/replay recovery path.
 
 ## Safety boundary
 

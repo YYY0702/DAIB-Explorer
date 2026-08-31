@@ -82,6 +82,19 @@ public:
   {
     return explorer.peerOwnsCandidate(point, score, timestamp);
   }
+
+  static double takeoverAdjustment(ExplorerCore &explorer,
+                                   const Vec3 &point,
+                                   double timestamp)
+  {
+    return explorer.takeoverScoreAdjustment(point, timestamp);
+  }
+
+  static double pvbsmAdjustment(
+      ExplorerCore &explorer, const PvbsmExplorationHint &hint)
+  {
+    return explorer.pvbsmScoreAdjustment(hint);
+  }
 };
 
 TEST(ExplorerCore, PeerGoalLeaseUsesScoreThenRobotIdTieBreak)
@@ -105,6 +118,59 @@ TEST(ExplorerCore, PeerGoalLeaseUsesScoreThenRobotIdTieBreak)
       explorer, {5.5, 0.0, 1.0}, 5.0, 5.0));
   EXPECT_FALSE(ExplorerCoreTestPeer::peerOwns(
       explorer, {5.5, 0.0, 1.0}, 4.0, 11.0));
+}
+
+TEST(ExplorerCore, ExpiredPeerTaskCreatesBoundedTakeoverRegion)
+{
+  ExplorerConfig config;
+  config.robot_id = 0;
+  config.cooperation_enabled = true;
+  config.takeover_region_radius_m = 5.0;
+  config.takeover_score_bonus = 4.0;
+  config.takeover_task_ttl_s = 20.0;
+  ExplorerCore explorer(config);
+  PeerGoalLease peer;
+  peer.robot_id = 1;
+  peer.session = 7;
+  peer.generation = 9;
+  peer.position = {5.0, 0.0, 1.0};
+  peer.active = true;
+
+  explorer.addExpiredPeerTask(peer, 10.0);
+
+  EXPECT_DOUBLE_EQ(
+      ExplorerCoreTestPeer::takeoverAdjustment(
+          explorer, peer.position, 11.0),
+      4.0);
+  EXPECT_GT(
+      ExplorerCoreTestPeer::takeoverAdjustment(
+          explorer, {7.0, 0.0, 1.0}, 11.0),
+      0.0);
+  EXPECT_DOUBLE_EQ(
+      ExplorerCoreTestPeer::takeoverAdjustment(
+          explorer, {11.0, 0.0, 1.0}, 11.0),
+      0.0);
+  EXPECT_DOUBLE_EQ(
+      ExplorerCoreTestPeer::takeoverAdjustment(
+          explorer, peer.position, 31.0),
+      0.0);
+}
+
+TEST(ExplorerCore, ConflictingPvbsmSourcesEncourageConservativeRevisit)
+{
+  ExplorerConfig config;
+  config.pvbsm_conflict_revisit_bonus = 0.75;
+  ExplorerCore explorer(config);
+  PvbsmExplorationHint agreed;
+  agreed.submap_observed = true;
+  agreed.submap_coverage = 0.5;
+  PvbsmExplorationHint conflicting = agreed;
+  conflicting.source_conflict = true;
+
+  EXPECT_DOUBLE_EQ(
+      ExplorerCoreTestPeer::pvbsmAdjustment(explorer, conflicting) -
+          ExplorerCoreTestPeer::pvbsmAdjustment(explorer, agreed),
+      0.75);
 }
 
 TEST(ExplorerCore, SeparatesDisconnectedFrontiersInsideLegacyMetricBucket)

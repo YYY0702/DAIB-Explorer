@@ -78,6 +78,26 @@ void ExplorerCore::setPeerGoalLeases(std::vector<PeerGoalLease> leases)
   peer_goal_leases_ = std::move(leases);
 }
 
+void ExplorerCore::addExpiredPeerTask(
+    const PeerGoalLease &lease, double timestamp)
+{
+  if (!config_.cooperation_enabled || !lease.active ||
+      lease.robot_id == static_cast<uint16_t>(config_.robot_id))
+    return;
+  const auto duplicate = std::find_if(
+      takeover_regions_.begin(), takeover_regions_.end(),
+      [&lease](const TakeoverRegion &region)
+      {
+        return region.robot_id == lease.robot_id &&
+               region.session == lease.session &&
+               region.generation == lease.generation;
+      });
+  if (duplicate != takeover_regions_.end()) return;
+  takeover_regions_.push_back(
+      {lease.robot_id, lease.session, lease.generation, lease.position,
+       timestamp + config_.takeover_task_ttl_s});
+}
+
 void ExplorerCore::sanitizeConfig()
 {
   config_.robot_id = std::max(0, std::min(65535, config_.robot_id));
@@ -202,11 +222,20 @@ void ExplorerCore::sanitizeConfig()
       std::max(0.0, config_.pvbsm_observed_root_penalty);
   config_.pvbsm_degenerate_structure_bonus =
       std::max(0.0, config_.pvbsm_degenerate_structure_bonus);
+  config_.pvbsm_conflict_revisit_bonus =
+      std::max(0.0, config_.pvbsm_conflict_revisit_bonus);
   config_.peer_goal_exclusion_radius_m =
       std::max(config_.planning_voxel_size_m,
                config_.peer_goal_exclusion_radius_m);
   config_.peer_goal_score_epsilon =
       std::max(0.0, config_.peer_goal_score_epsilon);
+  config_.takeover_region_radius_m =
+      std::max(config_.planning_voxel_size_m,
+               config_.takeover_region_radius_m);
+  config_.takeover_score_bonus =
+      std::max(0.0, config_.takeover_score_bonus);
+  config_.takeover_task_ttl_s =
+      std::max(1.0, config_.takeover_task_ttl_s);
 }
 
 double ExplorerCore::distance(const Vec3 &a, const Vec3 &b)
@@ -1020,6 +1049,8 @@ double ExplorerCore::pvbsmScoreAdjustment(
   if (degenerate_)
     adjustment += config_.pvbsm_degenerate_structure_bonus *
                   clamp(hint.structural_support, 0.0, 1.0);
+  if (hint.source_conflict)
+    adjustment += config_.pvbsm_conflict_revisit_bonus;
   return adjustment;
 }
 
@@ -1049,6 +1080,32 @@ bool ExplorerCore::peerOwnsActiveGoal(double timestamp) const
          peerOwnsCandidate(decision_.position, decision_.score, timestamp);
 }
 
+void ExplorerCore::pruneTakeoverRegions(double timestamp)
+{
+  takeover_regions_.erase(
+      std::remove_if(
+          takeover_regions_.begin(), takeover_regions_.end(),
+          [timestamp](const TakeoverRegion &region)
+          { return region.expires_at <= timestamp; }),
+      takeover_regions_.end());
+}
+
+double ExplorerCore::takeoverScoreAdjustment(
+    const Vec3 &point, double timestamp) const
+{
+  double best = 0.0;
+  for (const TakeoverRegion &region : takeover_regions_)
+  {
+    if (region.expires_at <= timestamp) continue;
+    const double separation = distance(point, region.position);
+    if (separation >= config_.takeover_region_radius_m) continue;
+    const double proximity =
+        1.0 - separation / config_.takeover_region_radius_m;
+    best = std::max(best, config_.takeover_score_bonus * proximity);
+  }
+  return best;
+}
+
 void ExplorerCore::updateVisitMemory(const Vec3 &position)
 {
   const VoxelKey coverage_key = key(position, config_.coverage_voxel_size_m);
@@ -1058,6 +1115,7 @@ void ExplorerCore::updateVisitMemory(const Vec3 &position)
 
 void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
 {
+  pruneTakeoverRegions(timestamp);
   std::vector<std::vector<VoxelKey>> clusters = frontierClusters();
   valid_cluster_frontiers_.clear();
   for (const std::vector<VoxelKey> &cluster : clusters)
@@ -1333,6 +1391,7 @@ void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
   double best_heading_change = 0.0;
   double best_observation_yaw = 0.0;
   bool found = false;
+  bool best_is_takeover = false;
   const std::vector<VoxelKey> *best_cluster = nullptr;
   int selected_tier = -1;
   for (std::size_t index = 0; index < candidates.size(); ++index)
@@ -1345,12 +1404,14 @@ void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
       if (!pvbsm_hints[index].submap_observed)
         ++stats_.pvbsm_unseen_candidates;
     }
+    const double takeover_adjustment =
+        takeoverScoreAdjustment(candidate.point, timestamp);
     const double score =
         frontierScore(candidate.voxel) +
         (degenerate_
              ? config_.degenerate_safe_path_weight * candidate.known_free
              : 0.0) +
-        pvbsm_adjustment -
+        pvbsm_adjustment + takeover_adjustment -
         config_.distance_cost_weight * candidate.distance -
         config_.heading_cost_weight * candidate.rotation_cost_deg / 180.0;
     ++stats_.candidates_scored;
@@ -1367,6 +1428,7 @@ void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
       best_observation_yaw = candidate.observation_yaw;
       selected_tier = candidate.tier;
       best_cluster = candidate.cluster;
+      best_is_takeover = takeover_adjustment > 0.0;
       found = true;
       stats_.pvbsm_best_adjustment = pvbsm_adjustment;
     }
@@ -1447,7 +1509,8 @@ void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
   decision_.constraint_tier = selected_tier;
   decision_.heading_change_deg = best_heading_change;
   decision_.state = degenerate_ ? "DEGRADED_EXPLORE" : "EXPLORE";
-  if (!had_goal) decision_.reason = "initial_frontier";
+  if (best_is_takeover) decision_.reason = "peer_task_takeover";
+  else if (!had_goal) decision_.reason = "initial_frontier";
   else if (peer_conflict) decision_.reason = "peer_goal_conflict";
   else if (goal_reached_) decision_.reason = "goal_reached";
   else if (goal_blocked_) decision_.reason = "new_obstacle";
@@ -1457,6 +1520,18 @@ void ExplorerCore::updateDecision(const Vec3 &position, double timestamp)
   goal_set_time_ = timestamp;
   blocked_streak_ = 0;
   ++decision_.generation;
+  if (best_is_takeover)
+  {
+    takeover_regions_.erase(
+        std::remove_if(
+            takeover_regions_.begin(), takeover_regions_.end(),
+            [this, &best](const TakeoverRegion &region)
+            {
+              return distance(best, region.position) <
+                     config_.takeover_region_radius_m;
+            }),
+        takeover_regions_.end());
+  }
   if (best_cluster)
     selected_frontier_cluster_ = *best_cluster;
   else

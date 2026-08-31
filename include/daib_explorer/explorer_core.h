@@ -155,6 +155,7 @@ struct ExplorerConfig
   double pvbsm_submap_coverage_penalty = 2.0;
   double pvbsm_observed_root_penalty = 1.5;
   double pvbsm_degenerate_structure_bonus = 0.75;
+  double pvbsm_conflict_revisit_bonus = 0.5;
 
   // DAIB-CoExplore: bounded, deterministic task deconfliction.  The smaller
   // robot id wins an equal-score tie, so two peers converge without a central
@@ -162,6 +163,9 @@ struct ExplorerConfig
   bool cooperation_enabled = false;
   double peer_goal_exclusion_radius_m = 2.0;
   double peer_goal_score_epsilon = 1e-3;
+  double takeover_region_radius_m = 5.0;
+  double takeover_score_bonus = 4.0;
+  double takeover_task_ttl_s = 60.0;
 };
 
 struct GoalDecision
@@ -245,6 +249,7 @@ public:
   bool requestGoalReselection(bool escape);
   void setPvbsmBatchQuery(PvbsmBatchQuery query);
   void setPeerGoalLeases(std::vector<PeerGoalLease> leases);
+  void addExpiredPeerTask(const PeerGoalLease &lease, double timestamp);
   void update(const Vec3 &position, const Quaternion &orientation,
               const std::vector<Vec3> &points, double timestamp);
   bool consumeDecision(GoalDecision &decision);
@@ -320,6 +325,15 @@ private:
   std::deque<FailedGoal> failed_goals_;
   PvbsmBatchQuery pvbsm_batch_query_;
   std::vector<PeerGoalLease> peer_goal_leases_;
+  struct TakeoverRegion
+  {
+    uint16_t robot_id = 0;
+    uint64_t session = 0;
+    uint64_t generation = 0;
+    Vec3 position;
+    double expires_at = 0.0;
+  };
+  std::deque<TakeoverRegion> takeover_regions_;
 
   static double distance(const Vec3 &a, const Vec3 &b);
   VoxelKey key(const Vec3 &point, double voxel_size) const;
@@ -365,6 +379,8 @@ private:
   bool peerOwnsCandidate(const Vec3 &point, double score,
                          double timestamp) const;
   bool peerOwnsActiveGoal(double timestamp) const;
+  double takeoverScoreAdjustment(const Vec3 &point, double timestamp) const;
+  void pruneTakeoverRegions(double timestamp);
   void updateVisitMemory(const Vec3 &position);
   void updateGoalStatus(const Vec3 &position, double timestamp);
   void updateDecision(const Vec3 &position, double timestamp);

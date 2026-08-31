@@ -1,0 +1,26 @@
+<launch>
+  <node pkg="daib_explorer" type="pvbsm_sync_relay_node"
+        name="sync_relay_0" output="screen">
+    <param name="robot_id" value="0"/>
+    <param name="local_delta_topic" value="/test/uav0/pvbsm_delta"/>
+    <param name="peer_delta_topic" value="/test/uav0/peer_delta"/>
+    <param name="sync_bus_topic" value="/test/pvbsm_sync"/>
+    <param name="cache_packets" value="128"/>
+    <param name="summary_rate_hz" value="5.0"/>
+  </node>
+
+  <node pkg="daib_explorer" type="pvbsm_sync_relay_node"
+        name="sync_relay_1" output="screen">
+    <param name="robot_id" value="1"/>
+    <param name="local_delta_topic" value="/test/uav1/pvbsm_delta"/>
+    <param name="peer_delta_topic" value="/test/uav1/peer_delta"/>
+    <param name="sync_bus_topic" value="/test/pvbsm_sync"/>
+    <param name="cache_packets" value="128"/>
+    <param name="summary_rate_hz" value="5.0"/>
+    <param name="drop_probability" value="0.20"/>
+  </node>
+
+  <test test-name="pvbsm_sync_relay_recovery"
+        pkg="daib_explorer" type="test_pvbsm_sync_relay.py"
+        time-limit="20"/>
+</launch>

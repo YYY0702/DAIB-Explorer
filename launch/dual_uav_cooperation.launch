@@ -8,6 +8,11 @@
   <arg name="decision_policy"
        default="$(find daib_decision)/config/decision_policy.yaml"/>
   <arg name="require_px4" default="false"/>
+  <!-- Application-level PVBSM recovery is enabled by default.  The drop
+       arguments are deterministic fault-injection controls for simulation. -->
+  <arg name="pvbsm_sync_cache_packets" default="512"/>
+  <arg name="uav0_receive_drop_probability" default="0.0"/>
+  <arg name="uav1_receive_drop_probability" default="0.0"/>
 
   <!-- Pose of uav1/camera_init expressed in uav0/camera_init. -->
   <arg name="uav1_in_uav0_x" default="0.0"/>
@@ -39,7 +44,7 @@
       <param name="topics/degeneracy_score" value="/uav0/daib_slam/degeneracy_score"/>
       <param name="topics/lio_runtime_ms" value="/uav0/daib_slam/lio_runtime_ms"/>
       <param name="topics/pvbsm_delta" value="/uav0/daib_slam/pvbsm_delta"/>
-      <param name="topics/peer_pvbsm_delta" value="/uav1/daib_slam/pvbsm_delta"/>
+      <param name="topics/peer_pvbsm_delta" value="/uav0/daib_coexplore/peer_pvbsm_delta"/>
       <param name="topics/goal" value="/uav0/daib_explorer/goal"/>
       <param name="topics/frontiers" value="/uav0/daib_explorer/frontiers"/>
       <param name="topics/valid_cluster_frontiers" value="/uav0/daib_explorer/valid_cluster_frontiers"/>
@@ -54,6 +59,17 @@
       <param name="topics/decision_command" value="/uav0/daib_decision/command"/>
       <param name="topics/decision_ack" value="/uav0/daib_decision/action_ack"/>
       <param name="topics/coexplore_task" value="/daib_coexplore/task"/>
+    </node>
+
+    <node pkg="daib_explorer" type="pvbsm_sync_relay_node"
+          name="pvbsm_sync_relay" output="screen">
+      <param name="robot_id" value="0"/>
+      <param name="local_delta_topic" value="/uav0/daib_slam/pvbsm_delta"/>
+      <param name="peer_delta_topic" value="/uav0/daib_coexplore/peer_pvbsm_delta"/>
+      <param name="sync_bus_topic" value="/daib_coexplore/pvbsm_sync"/>
+      <param name="stats_topic" value="/uav0/daib_coexplore/pvbsm_sync_stats"/>
+      <param name="cache_packets" value="$(arg pvbsm_sync_cache_packets)"/>
+      <param name="drop_probability" value="$(arg uav0_receive_drop_probability)"/>
     </node>
 
     <node pkg="daib_decision" type="daib_decision_node"
@@ -81,7 +97,7 @@
       <param name="topics/degeneracy_score" value="/uav1/daib_slam/degeneracy_score"/>
       <param name="topics/lio_runtime_ms" value="/uav1/daib_slam/lio_runtime_ms"/>
       <param name="topics/pvbsm_delta" value="/uav1/daib_slam/pvbsm_delta"/>
-      <param name="topics/peer_pvbsm_delta" value="/uav0/daib_slam/pvbsm_delta"/>
+      <param name="topics/peer_pvbsm_delta" value="/uav1/daib_coexplore/peer_pvbsm_delta"/>
       <param name="topics/goal" value="/uav1/daib_explorer/goal"/>
       <param name="topics/frontiers" value="/uav1/daib_explorer/frontiers"/>
       <param name="topics/valid_cluster_frontiers" value="/uav1/daib_explorer/valid_cluster_frontiers"/>
@@ -96,6 +112,17 @@
       <param name="topics/decision_command" value="/uav1/daib_decision/command"/>
       <param name="topics/decision_ack" value="/uav1/daib_decision/action_ack"/>
       <param name="topics/coexplore_task" value="/daib_coexplore/task"/>
+    </node>
+
+    <node pkg="daib_explorer" type="pvbsm_sync_relay_node"
+          name="pvbsm_sync_relay" output="screen">
+      <param name="robot_id" value="1"/>
+      <param name="local_delta_topic" value="/uav1/daib_slam/pvbsm_delta"/>
+      <param name="peer_delta_topic" value="/uav1/daib_coexplore/peer_pvbsm_delta"/>
+      <param name="sync_bus_topic" value="/daib_coexplore/pvbsm_sync"/>
+      <param name="stats_topic" value="/uav1/daib_coexplore/pvbsm_sync_stats"/>
+      <param name="cache_packets" value="$(arg pvbsm_sync_cache_packets)"/>
+      <param name="drop_probability" value="$(arg uav1_receive_drop_probability)"/>
     </node>
 
     <node pkg="daib_decision" type="daib_decision_node"

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 namespace daib_explorer
 {
 
@@ -16,6 +18,8 @@ struct PvbsmExplorationHint
   bool submap_observed = false;
   double submap_coverage = 0.0;
   double structural_support = 0.0;
+  uint16_t contributing_sources = 0;
+  bool source_conflict = false;
 };
 
 } // namespace daib_explorer

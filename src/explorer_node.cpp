@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdint>
 #include <memory>
+#include <limits>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -232,6 +233,9 @@ private:
   double peer_goal_exclusion_radius_m_ = 2.0;
   double peer_transform_timeout_s_ = 0.05;
   double peer_max_future_skew_s_ = 0.5;
+  double peer_max_anchor_translation_m_ = 100.0;
+  double peer_max_anchor_roll_pitch_deg_ = 10.0;
+  double pvbsm_source_conflict_tolerance_ = 0.35;
   uint64_t coexplore_session_ = ros::WallTime::now().toNSec();
   uint64_t coexplore_sequence_ = 0;
   ros::WallTime last_coexplore_publish_;
@@ -242,6 +246,7 @@ private:
   {
     PeerGoalLease lease;
     ros::WallTime last_receive;
+    bool takeover_recorded = false;
   };
   std::unordered_map<uint16_t, PeerTaskState> peer_tasks_;
   std::unordered_map<uint16_t, std::string> pvbsm_source_frames_;
@@ -330,6 +335,15 @@ private:
     private_nh_.param("cooperation/max_future_skew_s",
                       peer_max_future_skew_s_,
                       peer_max_future_skew_s_);
+    private_nh_.param("cooperation/max_anchor_translation_m",
+                      peer_max_anchor_translation_m_,
+                      peer_max_anchor_translation_m_);
+    private_nh_.param("cooperation/max_anchor_roll_pitch_deg",
+                      peer_max_anchor_roll_pitch_deg_,
+                      peer_max_anchor_roll_pitch_deg_);
+    private_nh_.param("pvbsm_source_conflict_tolerance",
+                      pvbsm_source_conflict_tolerance_,
+                      pvbsm_source_conflict_tolerance_);
     map_update_rate_hz_ = std::max(0.2, map_update_rate_hz_);
     input_timeout_s_ = std::max(0.1, input_timeout_s_);
     ready_heartbeat_rate_hz_ = std::max(0.1, ready_heartbeat_rate_hz_);
@@ -348,6 +362,12 @@ private:
         std::max(0.5, peer_goal_exclusion_radius_m_);
     peer_transform_timeout_s_ = std::max(0.0, peer_transform_timeout_s_);
     peer_max_future_skew_s_ = std::max(0.0, peer_max_future_skew_s_);
+    peer_max_anchor_translation_m_ =
+        std::max(1.0, peer_max_anchor_translation_m_);
+    peer_max_anchor_roll_pitch_deg_ =
+        std::max(0.0, std::min(45.0, peer_max_anchor_roll_pitch_deg_));
+    pvbsm_source_conflict_tolerance_ =
+        std::max(0.0, std::min(1.0, pvbsm_source_conflict_tolerance_));
 
     private_nh_.param("robot_id", config.robot_id, config.robot_id);
     config.cooperation_enabled = cooperation_enabled_;
@@ -355,6 +375,15 @@ private:
     private_nh_.param("cooperation/score_tie_epsilon",
                       config.peer_goal_score_epsilon,
                       config.peer_goal_score_epsilon);
+    private_nh_.param("cooperation/takeover_region_radius_m",
+                      config.takeover_region_radius_m,
+                      config.takeover_region_radius_m);
+    private_nh_.param("cooperation/takeover_score_bonus",
+                      config.takeover_score_bonus,
+                      config.takeover_score_bonus);
+    private_nh_.param("cooperation/takeover_task_ttl_s",
+                      config.takeover_task_ttl_s,
+                      config.takeover_task_ttl_s);
     private_nh_.param("planning_voxel_size_m",
                       config.planning_voxel_size_m,
                       config.planning_voxel_size_m);
@@ -557,6 +586,9 @@ private:
     private_nh_.param("pvbsm_degenerate_structure_bonus",
                       config.pvbsm_degenerate_structure_bonus,
                       config.pvbsm_degenerate_structure_bonus);
+    private_nh_.param("pvbsm_conflict_revisit_bonus",
+                      config.pvbsm_conflict_revisit_bonus,
+                      config.pvbsm_conflict_revisit_bonus);
     if (config.goal_timeout_s > 0.0)
     {
       ROS_WARN_STREAM(
@@ -599,12 +631,61 @@ private:
     lio_runtime_ms_ = message->data;
   }
 
+  bool peerTransformAcceptable(
+      const tf::Transform &transform, const char *context) const
+  {
+    const tf::Vector3 translation = transform.getOrigin();
+    const tf::Quaternion rotation = transform.getRotation();
+    if (!std::isfinite(translation.x()) ||
+        !std::isfinite(translation.y()) ||
+        !std::isfinite(translation.z()) ||
+        !std::isfinite(rotation.x()) ||
+        !std::isfinite(rotation.y()) ||
+        !std::isfinite(rotation.z()) ||
+        !std::isfinite(rotation.w()) || rotation.length2() < 1e-9)
+    {
+      ROS_ERROR_STREAM_THROTTLE(
+          2.0, "[ DAIB CoExplore ] invalid " << context
+                   << " peer transform");
+      return false;
+    }
+    if (translation.length() > peer_max_anchor_translation_m_)
+    {
+      ROS_ERROR_STREAM_THROTTLE(
+          2.0, "[ DAIB CoExplore ] " << context
+                   << " peer anchor translation exceeds gate: "
+                   << translation.length());
+      return false;
+    }
+    double roll = 0.0;
+    double pitch = 0.0;
+    double yaw = 0.0;
+    tf::Matrix3x3(rotation.normalized()).getRPY(roll, pitch, yaw);
+    constexpr double kRadToDeg = 57.29577951308232;
+    if (std::fabs(roll) * kRadToDeg > peer_max_anchor_roll_pitch_deg_ ||
+        std::fabs(pitch) * kRadToDeg > peer_max_anchor_roll_pitch_deg_)
+    {
+      ROS_ERROR_STREAM_THROTTLE(
+          2.0, "[ DAIB CoExplore ] " << context
+                   << " peer anchor roll/pitch exceeds gate");
+      return false;
+    }
+    return true;
+  }
+
   std::vector<PvbsmExplorationHint> queryFusedPvbsmHints(
       const std::vector<PvbsmQueryPoint> &local_points,
       double root_voxel_size,
       std::size_t covered_root_target)
   {
     std::vector<PvbsmExplorationHint> fused(local_points.size());
+    std::vector<double> coverage_sum(local_points.size(), 0.0);
+    std::vector<double> coverage_min(
+        local_points.size(), std::numeric_limits<double>::infinity());
+    std::vector<double> coverage_max(local_points.size(), 0.0);
+    std::vector<double> structure_sum(local_points.size(), 0.0);
+    std::vector<uint16_t> contributors(local_points.size(), 0U);
+    std::vector<uint16_t> root_observed_votes(local_points.size(), 0U);
     std::vector<uint16_t> sources;
     std::unordered_map<uint16_t, std::string> source_frames;
     {
@@ -633,6 +714,7 @@ private:
           tf::StampedTransform transform;
           tf_listener_.lookupTransform(
               source_frame->second, local_frame, ros::Time(0), transform);
+          if (!peerTransformAcceptable(transform, "PVBSM")) continue;
           for (std::size_t index = 0; index < local_points.size(); ++index)
           {
             const tf::Vector3 local(
@@ -662,15 +744,34 @@ private:
       if (hints.size() != fused.size()) continue;
       for (std::size_t index = 0; index < fused.size(); ++index)
       {
-        fused[index].root_observed =
-            fused[index].root_observed || hints[index].root_observed;
-        fused[index].submap_observed =
-            fused[index].submap_observed || hints[index].submap_observed;
-        fused[index].submap_coverage = std::max(
-            fused[index].submap_coverage, hints[index].submap_coverage);
-        fused[index].structural_support = std::max(
-            fused[index].structural_support, hints[index].structural_support);
+        if (!hints[index].submap_observed) continue;
+        fused[index].submap_observed = true;
+        ++contributors[index];
+        if (hints[index].root_observed) ++root_observed_votes[index];
+        coverage_sum[index] += hints[index].submap_coverage;
+        coverage_min[index] = std::min(
+            coverage_min[index], hints[index].submap_coverage);
+        coverage_max[index] = std::max(
+            coverage_max[index], hints[index].submap_coverage);
+        structure_sum[index] += hints[index].structural_support;
       }
+    }
+    for (std::size_t index = 0; index < fused.size(); ++index)
+    {
+      const uint16_t count = contributors[index];
+      fused[index].contributing_sources = count;
+      if (count == 0U) continue;
+      const double spread = coverage_max[index] - coverage_min[index];
+      fused[index].source_conflict =
+          count > 1U && spread > pvbsm_source_conflict_tolerance_;
+      // A root is treated as visited only when every aligned source that
+      // knows this submap agrees. This avoids suppressing a frontier because
+      // one vehicle supplied a stale or misaligned positive observation.
+      fused[index].root_observed = root_observed_votes[index] == count;
+      fused[index].submap_coverage = fused[index].source_conflict
+                                          ? coverage_min[index]
+                                          : coverage_sum[index] / count;
+      fused[index].structural_support = structure_sum[index] / count;
     }
     return fused;
   }
@@ -969,7 +1070,18 @@ private:
             peer_goal.header.stamp.isZero() ? ros::Time(0)
                                             : peer_goal.header.stamp,
             ros::Duration(peer_transform_timeout_s_));
-        tf_listener_.transformPose(local_frame, peer_goal, local_goal);
+        tf::StampedTransform transform;
+        tf_listener_.lookupTransform(
+            local_frame, peer_goal.header.frame_id,
+            peer_goal.header.stamp.isZero() ? ros::Time(0)
+                                            : peer_goal.header.stamp,
+            transform);
+        if (!peerTransformAcceptable(transform, "task")) return;
+        tf::Pose peer_pose;
+        tf::poseMsgToTF(peer_goal.pose, peer_pose);
+        local_goal.header = peer_goal.header;
+        local_goal.header.frame_id = local_frame;
+        tf::poseTFToMsg(transform * peer_pose, local_goal.pose);
       }
     }
     catch (const tf::TransformException &error)
@@ -1019,6 +1131,7 @@ private:
         declared_expiry, local_now + peer_goal_ttl_s_);
     state.lease.active = message->active;
     state.last_receive = ros::WallTime::now();
+    state.takeover_recorded = false;
     peer_tasks_[message->robot_id] = state;
   }
 
@@ -1029,6 +1142,17 @@ private:
     std::lock_guard<std::mutex> lock(peer_mutex_);
     for (auto peer = peer_tasks_.begin(); peer != peer_tasks_.end();)
     {
+      if (peer->second.lease.active &&
+          peer->second.lease.valid_until <= timestamp &&
+          !peer->second.takeover_recorded)
+      {
+        core_->addExpiredPeerTask(peer->second.lease, timestamp);
+        peer->second.takeover_recorded = true;
+        ROS_WARN_STREAM(
+            "[ DAIB CoExplore ] peer lease expired; registering takeover "
+            "region robot=" << peer->second.lease.robot_id
+            << ", generation=" << peer->second.lease.generation);
+      }
       if (peer->second.lease.valid_until + peer_goal_ttl_s_ < timestamp)
       {
         peer = peer_tasks_.erase(peer);
